@@ -1,0 +1,23 @@
+# Chess AI — Python dependencies (pinned to a known-good set).
+#
+# PyTorch with CUDA must be installed from the official CUDA wheel index, e.g.:
+#   pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+# (CPU-only fallback: pip install torch==2.11.0)
+torch==2.11.0
+numpy==2.4.3
+chess==1.11.2             # modern python-chess (PyPI package name is "chess";
+                          #   the legacy "python-chess" name stops at 1.1.0).
+                          #   Validation / fallback backend only.
+pybind11==3.0.4           # build-time: C++ extension (setup_ext.py)
+psutil==7.2.2             # hardware probe (utils/system_probe.py)
+tensorboard==2.20.0       # training metrics (utils/logger.py)
+onnx==1.21.0              # ONNX export (model/onnx_export.py); needed only
+                          #   when config.inference_backend = "onnx"
+#
+# Optional, install manually only if you opt into ONNX inference. This
+# REPLACES the CPU 'onnxruntime' and its CUDA/Blackwell support is not
+# guaranteed — verify with tools/verify_onnx.py + tools/bench_infer.py first:
+#   pip uninstall onnxruntime && pip install onnxruntime-gpu
+#
+# tools/web_gui.py and tools/lichess_bot.py use only the Python stdlib
+# (no FastAPI / berserk needed).
