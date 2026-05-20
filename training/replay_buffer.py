@@ -32,6 +32,60 @@ import torch
 from torch.utils.data import Dataset
 
 
+# ── SumTree for PER ─────────────────────────────────────────────────────────
+
+class SumTree:
+    """
+    A binary tree data structure where the parent node is the sum of its children.
+    Enables O(log N) sampling and O(log N) priority updates.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        # The tree has 2*capacity - 1 nodes.
+        # Leaves are in the range [capacity-1, 2*capacity-2].
+        self.tree = np.zeros(2 * capacity - 1, dtype=np.float64)
+
+    def update(self, idx: int, priority: float) -> None:
+        """Update priority at leaf index `idx` (0-based relative to leaves)."""
+        tree_idx = idx + self.capacity - 1
+        change = priority - self.tree[tree_idx]
+        self.tree[tree_idx] = priority
+
+        # Propagate the change up to the root
+        while tree_idx != 0:
+            tree_idx = (tree_idx - 1) // 2
+            self.tree[tree_idx] += change
+
+    def get_leaf(self, v: float) -> Tuple[int, float]:
+        """
+        Find the leaf index corresponding to value `v` in [0, sum(tree)].
+        Returns (leaf_idx, priority).
+        """
+        parent_idx = 0
+        while True:
+            left_child_idx = 2 * parent_idx + 1
+            right_child_idx = left_child_idx + 1
+
+            # Check if we reached a leaf
+            if left_child_idx >= len(self.tree):
+                leaf_idx = parent_idx
+                break
+
+            if v <= self.tree[left_child_idx]:
+                parent_idx = left_child_idx
+            else:
+                v -= self.tree[left_child_idx]
+                parent_idx = right_child_idx
+
+        data_idx = leaf_idx - self.capacity + 1
+        return data_idx, self.tree[leaf_idx]
+
+    @property
+    def total_priority(self) -> float:
+        return self.tree[0]
+
+
 # ── Position record ────────────────────────────────────────────────────────
 
 class PositionRecord:
@@ -74,12 +128,8 @@ class PositionRecord:
 
 class PrioritizedReplayBuffer:
     """
-    Ring-buffer with priority-based sampling.
-
-    Priorities are stored as a flat NumPy array so that the sum-tree
-    bookkeeping (optional) can be added later.  For now we use a simple
-    proportional scheme: O(N) sampling, which is fast enough for 2M positions
-    when sampled in a batch via `np.random.choice`.
+    Ring-buffer with priority-based sampling using a SumTree.
+    Enables O(log N) sampling and updates.
     """
 
     def __init__(
@@ -96,12 +146,12 @@ class PrioritizedReplayBuffer:
         self.beta_end    = beta_end
         self.total_steps = total_steps
 
-        self._data:      list[Optional[PositionRecord]] = [None] * capacity
-        self._priorities = np.zeros(capacity, dtype=np.float32)
-        self._ptr        = 0          # Write pointer
-        self._size       = 0          # Current fill
-        self._step       = 0          # Training steps seen (for β annealing)
-        self._max_prio   = 1.0        # Max priority seen (new entries get this)
+        self._data: list[Optional[PositionRecord]] = [None] * capacity
+        self.tree  = SumTree(capacity)
+        self._ptr  = 0          # Write pointer
+        self._size = 0          # Current fill
+        self._step = 0          # Training steps seen (for β annealing)
+        self._max_prio = 1.0    # Max priority seen (new entries get this)
 
     def __len__(self) -> int:
         return self._size
@@ -110,14 +160,16 @@ class PrioritizedReplayBuffer:
         return self._size >= min_size
 
     def add(self, record: PositionRecord, td_error: Optional[float] = None) -> None:
-        """Add a single position.  If no td_error given, uses max priority."""
+        """Add a single position. If no td_error given, uses max priority."""
         prio = (abs(td_error) + 1e-6) ** self.alpha if td_error is not None \
                else self._max_prio
-        self._data[self._ptr]       = record
-        self._priorities[self._ptr] = prio
-        self._max_prio              = max(self._max_prio, prio)
-        self._ptr   = (self._ptr + 1) % self.capacity
-        self._size  = min(self._size + 1, self.capacity)
+
+        self._data[self._ptr] = record
+        self.tree.update(self._ptr, prio)
+
+        self._max_prio = max(self._max_prio, prio)
+        self._ptr  = (self._ptr + 1) % self.capacity
+        self._size = min(self._size + 1, self.capacity)
 
     def add_batch(
         self,
@@ -132,7 +184,7 @@ class PrioritizedReplayBuffer:
         self, batch_size: int
     ) -> Tuple[List[PositionRecord], np.ndarray, np.ndarray]:
         """
-        Sample `batch_size` positions.
+        Sample `batch_size` positions using the SumTree.
 
         Returns:
             (records, indices, weights)
@@ -141,16 +193,25 @@ class PrioritizedReplayBuffer:
         if self._size == 0:
             raise RuntimeError("Cannot sample from empty buffer")
 
+        indices = []
+        priorities = []
         beta = self._current_beta()
-        prios = self._priorities[: self._size]
-        probs = prios / prios.sum()
+        segment = self.tree.total_priority / batch_size
 
-        indices = np.random.choice(self._size, size=batch_size,
-                                   replace=True, p=probs)
+        for i in range(batch_size):
+            a = segment * i
+            b = segment * (i + 1)
+            v = np.random.uniform(a, b)
+            idx, p = self.tree.get_leaf(v)
+            indices.append(idx)
+            priorities.append(p)
+
+        indices = np.array(indices, dtype=np.int64)
         records = [self._data[i] for i in indices]
 
-        # IS weights
-        weights = (self._size * probs[indices]) ** (-beta)
+        # Importance sampling weights: w = (N * P(i))^-beta
+        probs = np.array(priorities) / self.tree.total_priority
+        weights = (self._size * probs) ** (-beta)
         weights /= weights.max()  # Normalise
         weights = weights.astype(np.float32)
 
@@ -160,7 +221,8 @@ class PrioritizedReplayBuffer:
         self, indices: np.ndarray, td_errors: np.ndarray
     ) -> None:
         prios = (np.abs(td_errors) + 1e-6) ** self.alpha
-        self._priorities[indices] = prios.astype(np.float32)
+        for idx, prio in zip(indices, prios):
+            self.tree.update(idx, prio)
         self._max_prio = max(self._max_prio, float(prios.max()))
 
     def step(self) -> None:
@@ -176,7 +238,7 @@ class PrioritizedReplayBuffer:
     def save(self, path: str) -> None:
         state = {
             "data":       self._data,
-            "priorities": self._priorities,
+            "tree":       self.tree.tree,
             "ptr":        self._ptr,
             "size":       self._size,
             "step":       self._step,
@@ -193,12 +255,20 @@ class PrioritizedReplayBuffer:
             return
         with open(path, "rb") as f:
             state = pickle.load(f)
-        self._data       = state["data"]
-        self._priorities = state["priorities"]
-        self._ptr        = state["ptr"]
-        self._size       = state["size"]
-        self._step       = state["step"]
-        self._max_prio   = state["max_prio"]
+        self._data      = state["data"]
+        self._ptr       = state["ptr"]
+        self._size      = state["size"]
+        self._step      = state["step"]
+        self._max_prio  = state.get("max_prio", 1.0)
+
+        if "tree" in state:
+            self.tree.tree = state["tree"]
+        elif "priorities" in state:
+            # Migration from old flat-array format to SumTree
+            print(f"[Buffer] Migrating priorities from legacy format...")
+            old_prios = state["priorities"]
+            for i in range(self._size):
+                self.tree.update(i, float(old_prios[i]))
 
 
 # ── Teacher buffer ────────────────────────────────────────────────────────

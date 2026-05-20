@@ -313,7 +313,13 @@ class Trainer:
 
         # ── Checkpoint ───────────────────────────────────────────────
         if self.global_step % self.cfg.checkpoint_every == 0:
-            self.save_checkpoint()
+            ckpt_path = self.save_checkpoint()
+
+            # Periodically save the replay and teacher buffers (every 5 checkpoints)
+            if self.global_step % (self.cfg.checkpoint_every * 5) == 0:
+                print(f"[Trainer] Saving buffers at step {self.global_step}...")
+                self.replay_buffer.save(ckpt_path.replace(".pt", "_replay.pkl"))
+                self.teacher_buffer.save(ckpt_path.replace(".pt", "_teacher.pkl"))
 
         # Cheap policy entropy for *logging* every step (the ERED regulation
         # in _regulate_entropy stays on its 5000-step cadence and is unchanged

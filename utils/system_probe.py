@@ -120,10 +120,12 @@ def _derive_config(gpu: dict, cpu: dict, ram: dict) -> dict:
     log_cores = cpu["logical_cores"]
 
     # ── Precision ──────────────────────────────────────────────────────────
-    if gpu["bf16_supported"]:
-        precision = "bf16"
+    if gpu["available"]:
+        precision = "bf16" if gpu["bf16_supported"] else "fp16"
     else:
-        precision = "fp16"
+        # CPU-only fallback: use fp32 (bf16 on CPU is often slower or
+        # has limited op support; fp16 is not supported)
+        precision = "fp32"
 
     # ── Batch size ─────────────────────────────────────────────────────────
     # Activation memory per sample at BF16 with 20 ResBlocks 256ch ≈ 2.4 MB
@@ -228,6 +230,8 @@ def write_config(derived: dict, config_path: Path | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 def _bar(value: float, max_val: float, width: int = 20) -> str:
+    if max_val <= 0:
+        return "[" + "." * width + "]"
     filled = int(round(value / max_val * width))
     return "[" + "#" * filled + "." * (width - filled) + "]"
 

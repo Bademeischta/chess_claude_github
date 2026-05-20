@@ -110,7 +110,7 @@ class ChessAIConfig:
     # uniform-random legal plies from the standard start (NOT recorded as
     # training targets). 0 = always start from the standard position
     # (unchanged behaviour). A value of 6–10 markedly diversifies replay data.
-    random_opening_plies: int = 0
+    random_opening_plies: int = 6
     # Optional path to a file with one FEN per line; if set, each game starts
     # from a random FEN drawn from it (applied before random_opening_plies).
     opening_book_path: str = ""
