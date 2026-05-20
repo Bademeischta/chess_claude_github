@@ -1,5 +1,30 @@
-checkpoints/
+# Python
 __pycache__/
-build/
-runs/
+*.py[cod]
 *.pyd
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Model checkpoints (large binary files)
+checkpoints/
+*.pt
+*.ckpt
+
+# Training artifacts
+runs/
+replay_buffer/
+*.replay
+*.log
+
+# Environments
+venv/
+.venv/
+env/
+.env
+*.env
+
+# Claude Code internal
+.claude/
