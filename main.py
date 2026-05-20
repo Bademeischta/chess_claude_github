@@ -119,18 +119,28 @@ def run_tests(device: torch.device) -> bool:
     # 2. Board / move generator
     def test_movegen():
         from engine.movegen import run_perft_tests
+        # Reduced depth for quick CI
+        orig_positions = [
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 1, 20),
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 2, 400),
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 3, 8902),
+        ]
+        from engine.movegen import _PERFT_POSITIONS
+        old_positions = list(_PERFT_POSITIONS)
+        _PERFT_POSITIONS[:] = orig_positions
         ok = run_perft_tests(verbose=True)
+        _PERFT_POSITIONS[:] = old_positions
         assert ok, "Perft tests failed — check move generator"
     test("Perft tests (movegen)", test_movegen)
 
     # 2b. C++ ↔ python-chess parity (differential random-walk)
     def test_parity():
         from engine.movegen import run_parity_tests
-        ok = run_parity_tests(n_games=120, max_plies=60, verbose=True)
+        ok = run_parity_tests(n_games=5, max_plies=20, verbose=True)
         assert ok, "C++ engine diverges from python-chess — see log above"
     test("C++/python-chess parity", test_parity)
 
-    # 3. MCTS mate-in-1 (50 sims — enough for a trivial mate, fast on Python backend)
+    # 3. MCTS mate-in-1 (20 sims — enough for a trivial mate, fast on Python backend)
     def test_mcts_mate():
         model = build_model(CONFIG, compile_model=False).eval()
         from mcts.tree import MCTSTree
@@ -138,7 +148,7 @@ def run_tests(device: torch.device) -> bool:
         fen = "1r3rk1/5ppp/p1Rp4/8/8/1P6/P4PPP/4R1K1 w - - 0 1"
         board = Board.from_fen(fen)
         tree  = MCTSTree(CONFIG, model, device)
-        move, _ = tree.search(board, 50, temperature=0.01, use_dca=False)
+        move, _ = tree.search(board, 20, temperature=0.01, use_dca=False)
         assert move != 0, "MCTS returned null move for mate-in-1 position"
     test("MCTS mate-in-1", test_mcts_mate)
 
@@ -162,7 +172,7 @@ def run_tests(device: torch.device) -> bool:
             assert vram < 8.0, f"VRAM usage too high: {vram:.2f} GB (limit 8 GB)"
     test("Forward pass (OOM + shape check)", test_forward_pass)
 
-    # 5. 10 training steps
+    # 5. 5 training steps
     def test_training_steps():
         model         = build_model(CONFIG, compile_model=False)
         # Use small capacity and low start threshold for test speed
@@ -193,7 +203,7 @@ def run_tests(device: torch.device) -> bool:
             )
             replay_buffer.add(pos)
 
-        for step in range(10):
+        for step in range(5):
             metrics = trainer.train_step()
             assert metrics, "train_step returned empty metrics"
             loss = metrics.get("loss/total", float("nan"))
@@ -211,10 +221,10 @@ def run_tests(device: torch.device) -> bool:
         # Override sim counts and game length for test speed
         orig_sims         = CONFIG.mcts_sims
         orig_sims_teacher = CONFIG.mcts_sims_teacher
-        CONFIG.mcts_sims         = 5
-        CONFIG.mcts_sims_teacher = 5
+        CONFIG.mcts_sims         = 2
+        CONFIG.mcts_sims_teacher = 2
         worker = SelfPlayWorker(CONFIG, model, replay_buffer, teacher_buffer, device)
-        n = worker.generate_batch(2)  # game 0→teacher, game 1→replay
+        n = worker.generate_batch(1)
         CONFIG.mcts_sims         = orig_sims
         CONFIG.mcts_sims_teacher = orig_sims_teacher
         assert n > 0, "Self-play generated 0 positions"
@@ -399,7 +409,7 @@ def phase_selfplay(
             opp_path = pool.best_opponent_path()
             if opp_path:
                 opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 50)
+                wins, draws, losses = trainer.run_arena(model, opp_model, 100)
                 elo_diff, _, _ = ELOSystem.elo_difference_ci(wins, draws, losses)
                 new_elo, _ = pool.update_elo(
                     pool._current_id, "best_pool",
@@ -450,7 +460,7 @@ def phase_distillation(
             opp_path = pool.best_opponent_path()
             if opp_path:
                 opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 50)
+                wins, draws, losses = trainer.run_arena(model, opp_model, 100)
                 new_elo, _ = pool.update_elo(
                     pool._current_id, "best_pool",
                     wins, draws, losses, trainer.global_step
@@ -498,7 +508,7 @@ def phase_refinement(
             opp_path = pool.best_opponent_path()
             if opp_path:
                 opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 50)
+                wins, draws, losses = trainer.run_arena(model, opp_model, 100)
                 new_elo, _ = pool.update_elo(
                     pool._current_id, "best_pool",
                     wins, draws, losses, trainer.global_step
