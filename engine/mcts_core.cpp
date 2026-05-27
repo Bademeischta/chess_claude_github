@@ -69,7 +69,10 @@ bool MCTSNode::is_leaf() const {
 }
 
 MCTSNode *MCTSNode::best_child(float c_puct) const {
-    assert(!children.empty());
+    // RUNTIME guard, not assert: assert() is compiled out in release builds
+    // (-DNDEBUG) and the loop below then iterates over an empty map and
+    // returns nullptr, which the caller dereferences -> access violation.
+    if (children.empty()) return nullptr;
     MCTSNode *best = nullptr;
     float best_score = -1e30f;
     int total_n = N;
@@ -85,7 +88,10 @@ MCTSNode *MCTSNode::best_child(float c_puct) const {
 
 // Temperature-sampled move selection (used for self-play action choice)
 chess::Move MCTSNode::sample_move(float temperature) const {
-    assert(!children.empty());
+    // RUNTIME guard, not assert: see best_child() above for rationale.
+    // Return the invalid sentinel move 0 so the Python caller can detect
+    // the degenerate state and recover via a legal-move fallback.
+    if (children.empty()) return chess::Move(0);
     if (temperature <= 0.01f) {
         // Greedy: pick most visited child
         chess::Move best_move = 0;
@@ -203,9 +209,17 @@ void MCTSTree::expand(MCTSNode *leaf,
         return;
     }
     assert(legal_moves.size() == priors.size());
+    // Double-expansion guard: if this leaf was already expanded (e.g. by a
+    // parallel selection that raced past virtual_loss, or a Python caller
+    // that re-invoked expand on the same node), `children[mv] = unique_ptr`
+    // below would overwrite the existing child and silently leak its entire
+    // subtree. `try_emplace` is a no-op when the key exists, preserving the
+    // first expansion and its visit counts. The freshly-built node is
+    // destroyed via unique_ptr if the insertion fails.
     for (size_t i = 0; i < legal_moves.size(); ++i) {
         chess::Move mv = legal_moves[i];
-        leaf->children[mv] = std::make_unique<MCTSNode>(mv, leaf, priors[i]);
+        auto fresh = std::make_unique<MCTSNode>(mv, leaf, priors[i]);
+        leaf->children.try_emplace(mv, std::move(fresh));
     }
 }
 

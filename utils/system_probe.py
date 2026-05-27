@@ -11,6 +11,7 @@ import sys
 import math
 import subprocess
 import textwrap
+import warnings
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -61,17 +62,28 @@ def _probe_gpu() -> dict:
             info["torch_compile_ok"] = True
         except ImportError:
             info["torch_compile_ok"] = False  # no Triton → eager only
-    except Exception:
-        pass
+    except Exception as e:
+        # GPU probe failed unexpectedly — log so the user knows they're
+        # silently falling back to CPU defaults (previously this was just
+        # `except: pass` and the failure was invisible).
+        warnings.warn(
+            f"[system_probe] GPU probe failed ({type(e).__name__}: {e}); "
+            f"using CPU defaults.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     # nvidia-smi for driver version
     try:
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
             text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
         info["driver_version"] = out.split("\n")[0].strip()
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        # nvidia-smi missing or non-NVIDIA GPU — expected on Intel/AMD/Apple,
+        # not worth warning about (info["driver_version"] stays "unknown").
         pass
 
     return info
@@ -90,8 +102,12 @@ def _probe_cpu() -> dict:
     try:
         import platform
         info["model"] = platform.processor() or "unknown"
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001  — non-fatal best-effort lookup
+        warnings.warn(
+            f"[system_probe] CPU model lookup failed ({type(e).__name__}: {e})",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return info
 
 
@@ -150,12 +166,27 @@ def _derive_config(gpu: dict, cpu: dict, ram: dict) -> dict:
     dataloader_workers = max(2, min(8, log_cores // 3))
 
     # ── Replay buffer ──────────────────────────────────────────────────────
-    # Real per-position cost (float16 storage): history (8×21×8×8) ≈ 21 KB +
-    # policy target (4672 f32) ≈ 19 KB + board (21×8×8) ≈ 3 KB + overhead
-    # ≈ 45 KB. The old 2 KB estimate under-counted ~22x, so the buffer grew
-    # unbounded until the OS killed the process ("training ends by itself").
-    # Cap at 40 % of available RAM and let the ring buffer recycle.
-    bytes_per_pos = 46_000
+    # Real per-position cost AFTER the sparse-policy compression in
+    # replay_buffer.PositionRecord:
+    #   * history (8 × 21 × 64 × 2 B fp16) ≈ 21.5 KB  (still dense)
+    #   * board   (21 × 64 × 2 B fp16)     ≈  2.6 KB
+    #   * policy target (sparse, ~50 nz):
+    #       int16 idx (50 × 2 B) + float32 val (50 × 4 B) ≈ 0.3 KB
+    #     (was 18.7 KB dense — ~50× smaller; the trainer expands on read)
+    #   * Python object overhead + scalars                ≈ 0.6 KB
+    # Total ≈ 25 KB / position. The old 46 KB estimate was correct BEFORE
+    # the sparse policy compression; after it the buffer can grow ~1.8× at
+    # the same RAM budget. Cap at 60 % of available RAM (was 40 %) — the
+    # DataLoader prefetch is small enough that this leaves plenty of
+    # headroom for activations / GRU state / OS.
+    # NOTE: 25 KB is the theoretical packed size; in practice Python object
+    # overhead, numpy header padding, and the per-record metadata push the
+    # realised footprint closer to 40 KB. The RAM share is also dropped from
+    # 0.60 → 0.40 because the ParallelMCTS pool itself can hold several GB of
+    # board-history state in the trees (n_games × T × board objects) on top
+    # of the replay buffer — silent process exits during self-play have
+    # historically been Windows OOM-kills triggered by exactly this overlap.
+    bytes_per_pos = 40_000
     max_buf = int(ram["available_gb"] * 0.40 * 1024 ** 3 / bytes_per_pos)
     replay_buffer_cap = max(50_000, min(2_000_000, max_buf))
 

@@ -15,11 +15,20 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import os
 import sys
 import signal
 import time
 from pathlib import Path
+
+# Catch C-level segfaults (chess_ext, CUDA, cuDNN) — without this a native
+# crash exits the process silently with no traceback.
+faulthandler.enable()
+
+# Surface CUDA errors at the launch site instead of asynchronously deep in an
+# unrelated kernel. Pay the small perf cost during dev; users can override.
+os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
 
 # Force UTF-8 output on Windows so Unicode chars in print() don't crash
 if sys.platform == "win32":
@@ -59,6 +68,58 @@ def _sigint_handler(sig, frame):
         except Exception as e:
             print(f"[main] Checkpoint save failed: {e}")
     sys.exit(0)
+
+
+# ── Stockfish auto-install (one-shot, idempotent via sentinel file) ──────
+
+def _maybe_install_stockfish(disabled: bool = False) -> None:
+    """Auto-download Stockfish on first run, so ELO measurement works without
+    any manual setup. Idempotent — a sentinel file in `runs/` prevents repeat
+    attempts. Skipped if --no-stockfish-download is passed.
+    """
+    if disabled:
+        return
+    sentinel = _root / "runs" / ".stockfish_installed"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    if sentinel.exists():
+        # Sentinel pins the path; refresh in-memory CONFIG in case probe
+        # already cleared it.
+        try:
+            sf_path = sentinel.read_text(encoding="utf-8").strip()
+            if sf_path and Path(sf_path).exists():
+                CONFIG.stockfish_path = sf_path
+        except OSError:
+            pass
+        return
+    if CONFIG.stockfish_path and Path(CONFIG.stockfish_path).exists():
+        # Already configured manually by the user — just write sentinel so we
+        # never re-run the download.
+        try:
+            sentinel.write_text(CONFIG.stockfish_path, encoding="utf-8")
+        except OSError:
+            pass
+        return
+
+    print("[main] First run: auto-installing Stockfish for ELO measurement…")
+    print("[main]   (skip permanently with --no-stockfish-download)")
+    try:
+        from tools.install_stockfish import install as _sf_install
+        binary = _sf_install(force=False, quiet=False)
+        if binary is None:
+            # Download/extract/verify failed — write a placeholder sentinel
+            # so we don't retry every start; the user can delete it to retry.
+            sentinel.write_text("FAILED", encoding="utf-8")
+            print("[main] Stockfish auto-install failed; ELO disabled. "
+                  "Re-run later with: python tools/install_stockfish.py")
+        else:
+            CONFIG.stockfish_path = binary.as_posix()
+    except Exception as e:
+        # Never let an installer issue block training.
+        print(f"[main] Stockfish auto-install errored: {e}; ELO disabled.")
+        try:
+            sentinel.write_text("FAILED", encoding="utf-8")
+        except OSError:
+            pass
 
 
 # ── System startup ────────────────────────────────────────────────────────
@@ -399,7 +460,7 @@ def phase_selfplay(
             opp_path = pool.best_opponent_path()
             if opp_path:
                 opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 50)
+                wins, draws, losses = trainer.run_arena(model, opp_model, CONFIG.arena_games)
                 elo_diff, _, _ = ELOSystem.elo_difference_ci(wins, draws, losses)
                 new_elo, _ = pool.update_elo(
                     pool._current_id, "best_pool",
@@ -450,7 +511,7 @@ def phase_distillation(
             opp_path = pool.best_opponent_path()
             if opp_path:
                 opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 50)
+                wins, draws, losses = trainer.run_arena(model, opp_model, CONFIG.arena_games)
                 new_elo, _ = pool.update_elo(
                     pool._current_id, "best_pool",
                     wins, draws, losses, trainer.global_step
@@ -498,7 +559,7 @@ def phase_refinement(
             opp_path = pool.best_opponent_path()
             if opp_path:
                 opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 50)
+                wins, draws, losses = trainer.run_arena(model, opp_model, CONFIG.arena_games)
                 new_elo, _ = pool.update_elo(
                     pool._current_id, "best_pool",
                     wins, draws, losses, trainer.global_step
@@ -706,6 +767,12 @@ def main() -> None:
         help="Net2Net: grow the --resume checkpoint to N residual blocks "
              "(warm-started weights, fresh optimizer), write *_grownN.pt, exit.",
     )
+    parser.add_argument(
+        "--no-stockfish-download",
+        action="store_true",
+        help="Skip the one-time auto-download of Stockfish (used for ELO "
+             "measurement). On by default the first time main.py runs.",
+    )
     args = parser.parse_args()
 
     # Apply CLI overrides
@@ -715,6 +782,9 @@ def main() -> None:
     # ── System initialisation ─────────────────────────────────────────
     signal.signal(signal.SIGINT, _sigint_handler)
     device = initialise_system(args)
+
+    # ── One-time Stockfish auto-install (for ELO measurement) ─────────
+    _maybe_install_stockfish(disabled=args.no_stockfish_download)
 
     # ── Net2Net grow (weights only, then exit) ────────────────────────
     if args.grow is not None:
@@ -758,6 +828,9 @@ def main() -> None:
         beta_start  = CONFIG.per_beta_start,
         beta_end    = CONFIG.per_beta_end,
         total_steps = CONFIG.total_steps,
+        draw_priority_mult       = CONFIG.draw_priority_mult,
+        draw_priority_start_mult = CONFIG.draw_priority_start_mult,
+        draw_priority_ramp_steps = CONFIG.draw_priority_ramp_steps,
     )
     teacher_buffer = TeacherBuffer(capacity=CONFIG.teacher_buffer_cap)
     pool           = OpponentPool(

@@ -9,6 +9,14 @@
 
 namespace chess {
 
+// ── Diagnostics ───────────────────────────────────────────────────────────
+// Count of stale/illegal Move objects that hit the safety branch in
+// Board::apply_move. Zero is expected for a healthy MCTS tree lifecycle;
+// any non-zero value indicates a regression worth fixing (see comment in
+// chess_core.cpp). Thread-safe.
+uint64_t stale_move_count();
+void reset_stale_move_count();
+
 // ── Basic types ───────────────────────────────────────────────────────────
 
 using Bitboard = uint64_t;

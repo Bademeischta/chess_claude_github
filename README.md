@@ -15,8 +15,10 @@ C++-Erweiterung, das neuronale Netz in PyTorch (CUDA, BF16).
 - [Befehle](#befehle)
 - [Trainingsablauf](#trainingsablauf)
 - [Gegen die KI spielen](#gegen-die-ki-spielen)
+- [ELO gegen Stockfish messen](#elo-gegen-stockfish-messen)
 - [Monitoring](#monitoring)
 - [Hardware-Autokonfiguration](#hardware-autokonfiguration)
+- [Stabilität & Crash-Resistenz](#stabilität--crash-resistenz)
 - [Realistische Performance](#realistische-performance)
 - [Projektstruktur](#projektstruktur)
 
@@ -215,6 +217,43 @@ python main.py --play
 
 ---
 
+## ELO gegen Stockfish messen
+
+Objektive Stärkemessung über UCI gegen Stockfish, der auf einen festen ELO
+gepinnt wird (`UCI_LimitStrength` + `UCI_Elo`). Vor dem ersten Lauf einmal
+Stockfish installieren (oder einen vorhandenen Pfad angeben):
+
+```bash
+python tools/install_stockfish.py
+```
+
+Stockfish landet unter `tools/stockfish/…`; der Pfad wird in
+`runs/.stockfish_installed` gemerkt. Danach:
+
+```bash
+# Schnelltest: 20 Partien vs SF@1500, neuester Checkpoint
+python tools/elo_vs_stockfish.py --games 20 --elo 1500
+
+# Längerer Lauf mit explizitem Checkpoint + mehr Sims
+python tools/elo_vs_stockfish.py --games 100 --elo 1800 \
+    --sims 400 --movetime 0.2 \
+    --resume checkpoints/step_0050000.pt
+```
+
+Ausgabe: W/D/L, ELO-Differenz zu SF und geschätztes Netz-ELO mit 95 %-CI.
+Wenig Spiele → sehr breite CI (Faustregel: ≥ 100 Spiele für brauchbare Werte).
+
+| Flag | Bedeutung |
+|---|---|
+| `--stockfish` | Pfad zur SF-Binary (Default: aus Installer-Sentinel) |
+| `--games` | Anzahl Partien (Default 20, alternierende Farben) |
+| `--elo` | SF-Stärke-Anker, 1320–3190 (Default 1500) |
+| `--sims` | Eigene MCTS-Sims/Zug (Default: aus `config.py`) |
+| `--movetime` | SF Bedenkzeit pro Zug in Sekunden (Default 0.1) |
+| `--resume` | Checkpoint laden (Default: neueste `.pt` aus `checkpoints/`) |
+
+---
+
 ## Monitoring
 
 ```bash
@@ -235,21 +274,59 @@ Bei jedem Start prüft `utils/system_probe.py` GPU/CPU/RAM und leitet
 - **Batch-Größe** (nach freiem VRAM)
 - **Parallele Spiele** (nach GPU-Breite — Self-Play ist GPU-gebunden, nicht
   CPU-gebunden)
-- **Replay-Buffer-Größe** (realistisch ~46 KB/Position, gedeckelt auf
-  40 % des freien RAM → Ringpuffer recycelt, kein OOM)
+- **Replay-Buffer-Größe** (realistisch ~40 KB/Position effektiv inkl.
+  Python-Overhead, gedeckelt auf 40 % des verfügbaren RAM → Ringpuffer
+  recycelt, OS und MCTS-Pool behalten Headroom)
 - **torch.compile** (auf Windows aus — kein Triton verfügbar)
 
 Manuelle Defaults stehen in `config.py`.
 
 ---
 
+## Stabilität & Crash-Resistenz
+
+Das Training läuft oft mehrere Stunden bis Tage; daher sind mehrere
+Verteidigungslinien gegen stille Abstürze eingebaut:
+
+- **`faulthandler`** (in `main.py` aktiviert): native Crashes aus
+  `chess_ext.pyd`, CUDA oder cuDNN landen mit Stacktrace im stderr-Log,
+  statt den Prozess wortlos zu beenden.
+- **`CUDA_LAUNCH_BLOCKING=1`** als Default: CUDA-Fehler werden synchron
+  am Auslöser sichtbar. Vor dem produktiven Hochskalieren kann die
+  Variable entfernt werden, sobald das Training stabil läuft.
+- **Self-Play-Generator (`mcts/tree.py:game_stream`)** wrappt seinen
+  Hauptloop in `try/except` und dumpt bei Crashs die aktuellen FENs
+  aller Pool-Spiele sowie Zugnummern. Stille Generator-Tode (häufige
+  Ursache von vermeintlich „spontanem Exit") sind so ausgeschlossen.
+- **NaN/Inf-Schutz im Trainer**: vor jedem `loss.backward()` prüft der
+  Trainer `torch.isfinite(loss)` und überspringt den Schritt sauber,
+  statt AdamW-Momente mit NaN-Gradienten zu vergiften.
+- **Policy-Logit-Clamp `[-30, 30]`** vor Softmax (`model/heads.py`):
+  verhindert NaN-Lawinen aus runaway-Logits beim Bootstrap.
+- **Replay-Buffer-Bounds**: Sparse-Policy-Indizes werden bei `__init__`
+  und beim Reconstruct gegen die Aktionsgröße geprüft (`IndexError`
+  statt stille Datenkorruption).
+- **Vollständige Checkpoint-State**: `_entropy_history` und PER-Beta-Step
+  (`replay_buffer._step`) wandern mit ins Checkpoint, so dass ein
+  Resume die ERED-Kalibrierung und die IS-Gewichte nicht reißt.
+- **Optimizer-Reset-Warnung**: falls ein Resume die AdamW-Momente nicht
+  laden kann (Arch-Wechsel), wird das laut ins Log geschrieben — ein
+  Loss-Spike danach ist erwartet, nicht ein Daten-Bug.
+- **Strg+C** speichert sauber einen Checkpoint, bevor der Prozess endet.
+
+Falls das Training trotzdem mal exit-t: im Log nach `[game_stream] FATAL`
+oder einem `Fatal Python error:` vom faulthandler suchen — dort steht
+der echte Auslöser, nicht erst die Folge-Symptome.
+
+---
+
 ## Realistische Performance
 
 Self-Play ist **GPU-gebunden** am Netz-Forward. Auf einer RTX 5070
-(26-M-Netz, eager BF16):
+(14-M-Netz, eager BF16):
 
-- NN-Forward-Decke: ~9 600 Evals/s bei Batch 122
-- ~250–290 k Positionen/h bei 50 Sims (Bootstrap)
+- NN-Forward-Decke: ~10 000 Evals/s bei Batch 122
+- ~280 k Positionen/h bei 50 Sims (Bootstrap)
 - ~70 k Positionen/h bei 200 Sims (Standard)
 
 > Die C++-Erweiterung beschleunigt **nur** Zuggenerierung/Suchbaum, **nicht**

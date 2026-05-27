@@ -264,14 +264,29 @@ class Trainer:
         total_loss_r = (alpha_p_r * policy_loss_r + alpha_v_r * value_loss_r) * w_r_t
         loss = total_loss_r.mean()
 
-        # Auxiliary loss (first `aux_steps` steps only)
-        if self._aux_active and self.global_step < self.cfg.aux_steps:
-            aux_target = (wdl_r_t * 2.0 - 1.0)  # Scale to [-1, 1]
-            aux_loss   = F.mse_loss(aux_r.squeeze(1).float(), aux_target)
-            loss = loss + self.cfg.aux_loss_weight * aux_loss
-        else:
-            self._aux_active = False
-            aux_loss = torch.zeros(1, device=self.device)
+        # Auxiliary loss — learnable-piece-value material head against the
+        # actual game outcome (mc_value_r). Active over the FULL run (not
+        # just aux_steps) because the aux head is now a structural piece-value
+        # regressor, not a one-off phase warm-up. Provides a dense signal even
+        # when WDL collapses (draw-heavy early training). The MCTS path uses
+        # WDL only, so this term never biases self-play.
+        aux_loss = F.mse_loss(aux_r.squeeze(1).float(), mc_value_r)
+        loss = loss + self.cfg.aux_loss_weight * aux_loss
+
+        # Soft L2 anchor on the learnable piece_values toward the classical
+        # chess valuations. Tiny weight (default 1e-3) — purely a tie-breaker
+        # for under-determined components; the data still dominates.
+        anchor_w = getattr(self.cfg, "piece_value_anchor_weight", 0.0)
+        if anchor_w > 0.0:
+            base_model = (self.model._orig_mod
+                          if hasattr(self.model, "_orig_mod") else self.model)
+            pv = base_model.value_head.piece_values
+            anchor = torch.tensor(
+                [1.0, 3.0, 3.0, 5.0, 9.0, 0.0],
+                dtype=pv.dtype, device=pv.device,
+            )
+            pv_anchor_loss = F.mse_loss(pv, anchor)
+            loss = loss + anchor_w * pv_anchor_loss
 
         # Teacher loss: KL divergence against teacher policy (soft targets)
         teacher_loss = torch.zeros(1, device=self.device)
@@ -285,6 +300,17 @@ class Trainer:
         # defer the host copy until after optimizer.step so the D2H transfer
         # overlaps with the backward/step kernels instead of blocking here.
         td_err_gpu = (q_r.detach() - value_target_r).abs()
+
+        # ── NaN/Inf guard: skip the step if loss is non-finite. A single
+        # backward with NaN gradients permanently corrupts AdamW's second
+        # moments, so it's better to drop the batch than to poison state.
+        if not torch.isfinite(loss):
+            print(f"[Trainer] WARN: non-finite loss at step {self.global_step} "
+                  f"(loss={loss.item() if loss.numel()==1 else 'tensor'}); "
+                  f"skipping update", flush=True)
+            self.optimizer.zero_grad(set_to_none=True)
+            self.global_step += 1
+            return {"loss": float("nan"), "skipped": 1.0}
 
         # ── Backward ─────────────────────────────────────────────────
         if self._amp_dtype == torch.float16:
@@ -314,6 +340,13 @@ class Trainer:
         # ── Checkpoint ───────────────────────────────────────────────
         if self.global_step % self.cfg.checkpoint_every == 0:
             self.save_checkpoint()
+            # Buffer persistence: every Nth checkpoint, dump replay + teacher
+            # buffers next to the .pt. Survives a crash without losing hours
+            # of self-play data. Save cadence configurable; default 5 × ckpt
+            # interval keeps overhead well under 1 %.
+            buf_every = getattr(self.cfg, "buffer_save_every", 5) * self.cfg.checkpoint_every
+            if buf_every > 0 and self.global_step % buf_every == 0:
+                self._save_buffers()
 
         # Cheap policy entropy for *logging* every step (the ERED regulation
         # in _regulate_entropy stays on its 5000-step cadence and is unchanged
@@ -356,10 +389,15 @@ class Trainer:
         avg_entropy = sum(self._entropy_history) / len(self._entropy_history)
         target = self.cfg.entropy_target
 
+        # Asymmetric step sizes — diffuse-policy correction needs to be more
+        # aggressive than collapse-correction. Observed in the 14K-step run:
+        # entropy drifted 3.36 → 3.68 (above target 2.5 × 1.2 = 3.0), but the
+        # ×0.9 step + 5000-step cadence shrank dirichlet_eps only 0.25 → 0.20
+        # — far too slow. ×0.85 and a 500-step cadence give meaningful pull.
         if avg_entropy < target * 0.8:
             # Policy collapsing — inject more noise
             self._dirichlet_eps = min(
-                self._dirichlet_eps * 1.2, self.cfg.dirichlet_eps_max
+                self._dirichlet_eps * 1.15, self.cfg.dirichlet_eps_max
             )
             self._alpha_v_global = max(
                 self._alpha_v_global * 0.95, self.cfg.alpha_v_global_min
@@ -367,7 +405,7 @@ class Trainer:
         elif avg_entropy > target * 1.2:
             # Policy too diffuse — reduce noise, increase value weight
             self._dirichlet_eps = max(
-                self._dirichlet_eps * 0.9, self.cfg.dirichlet_eps_min
+                self._dirichlet_eps * 0.85, self.cfg.dirichlet_eps_min
             )
             self._alpha_v_global = min(
                 self._alpha_v_global * 1.05, self.cfg.alpha_v_global_max
@@ -394,6 +432,13 @@ class Trainer:
             "scaler":      self._scaler.state_dict(),
             "dirichlet_eps":  self._dirichlet_eps,
             "alpha_v_global": self._alpha_v_global,
+            # ERED state — persist so a resumed run doesn't restart the
+            # entropy-drift estimator from scratch (which would mis-calibrate
+            # dirichlet_eps for the first `entropy_check_every` steps).
+            "entropy_history": list(self._entropy_history),
+            # PER-beta annealing position. Without this, resumed training
+            # jumps to a wrong beta and discontinuously reweights IS samples.
+            "replay_step":    int(self.replay_buffer._step),
         }
         torch.save(state, path)
 
@@ -410,6 +455,74 @@ class Trainer:
 
         return path
 
+    def _save_buffers(self) -> None:
+        """Dump replay + teacher buffers as gzip-pickle next to the latest
+        checkpoint. Overwrites a single sliding pair (no per-step copies) to
+        keep disk usage bounded. Errors are non-fatal — training continues."""
+        try:
+            import gzip, pickle
+            ckpt_dir = Path(self.cfg.checkpoint_dir)
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+            def _dump(obj, path: Path):
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                with gzip.open(tmp, "wb", compresslevel=3) as f:
+                    pickle.dump(obj, f, protocol=4)
+                tmp.replace(path)  # atomic on POSIX, best-effort on Windows
+
+            replay_state = {
+                "data":       self.replay_buffer._data,
+                "priorities": self.replay_buffer._priorities,
+                "ptr":        self.replay_buffer._ptr,
+                "size":       self.replay_buffer._size,
+                "step":       self.replay_buffer._step,
+                "max_prio":   self.replay_buffer._max_prio,
+            }
+            _dump(replay_state, ckpt_dir / "replay.pkl.gz")
+
+            teacher_state = {
+                "data": self.teacher_buffer._data,
+                "ptr":  self.teacher_buffer._ptr,
+                "size": self.teacher_buffer._size,
+            }
+            _dump(teacher_state, ckpt_dir / "teacher.pkl.gz")
+            print(f"[Trainer] Buffer snapshot saved "
+                  f"(replay={len(self.replay_buffer):,}, "
+                  f"teacher={len(self.teacher_buffer):,})")
+        except Exception as e:  # noqa: BLE001
+            print(f"[Trainer] Buffer save skipped: {type(e).__name__}: {e}")
+
+    def _load_buffers(self) -> None:
+        """Counterpart to _save_buffers. Called from load_checkpoint."""
+        try:
+            import gzip, pickle
+            ckpt_dir = Path(self.cfg.checkpoint_dir)
+            replay_path  = ckpt_dir / "replay.pkl.gz"
+            teacher_path = ckpt_dir / "teacher.pkl.gz"
+            if replay_path.exists():
+                with gzip.open(replay_path, "rb") as f:
+                    state = pickle.load(f)
+                # SECURITY: only ever load buffer dumps this process wrote
+                # itself / from a trusted local checkpoint dir.
+                self.replay_buffer._data       = state["data"]
+                self.replay_buffer._priorities = state["priorities"]
+                self.replay_buffer._ptr        = state["ptr"]
+                self.replay_buffer._size       = state["size"]
+                self.replay_buffer._step       = state["step"]
+                self.replay_buffer._max_prio   = state["max_prio"]
+                print(f"[Trainer] Replay buffer restored "
+                      f"({len(self.replay_buffer):,} positions)")
+            if teacher_path.exists():
+                with gzip.open(teacher_path, "rb") as f:
+                    state = pickle.load(f)
+                self.teacher_buffer._data = state["data"]
+                self.teacher_buffer._ptr  = state["ptr"]
+                self.teacher_buffer._size = state["size"]
+                print(f"[Trainer] Teacher buffer restored "
+                      f"({len(self.teacher_buffer):,} positions)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[Trainer] Buffer load skipped: {type(e).__name__}: {e}")
+
     def load_checkpoint(self, path: str) -> None:
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint not found: {path}")
@@ -422,10 +535,80 @@ class Trainer:
 
         base_model = self.model._orig_mod if hasattr(self.model, "_orig_mod") \
                      else self.model
-        base_model.load_state_dict(state["model"])
+        # Migration: older checkpoints had ValueHead.fc_aux (Linear 256→1) where
+        # the new arch uses ValueHead.piece_values (6,). Drop the obsolete keys
+        # so load_state_dict still succeeds — piece_values keeps its default
+        # init [1,3,3,5,9,0] which is exactly the warm-start we want.
+        sd = state["model"]
+        legacy_aux_keys = [k for k in sd
+                           if k.startswith(("value_head.fc_aux.",
+                                            "_orig_mod.value_head.fc_aux."))]
+        for k in legacy_aux_keys:
+            sd.pop(k, None)
+
+        # Migration: the policy head was widened from a 2-channel bottleneck
+        # to `policy_mid_channels` (default 32). Old checkpoints carry conv /
+        # norm / fc weights with shape (2, …); they will not align with the
+        # new arch. Drop them and let `_init_weights` reseed — losing the
+        # old policy head is preferable to a load_state_dict shape error,
+        # and the policy will recover quickly once the network sees data.
+        # (Detect by inspecting the saved shape against the current shape.)
+        try:
+            cur_conv_shape = base_model.policy_head.conv.weight.shape
+        except AttributeError:
+            cur_conv_shape = None
+        if cur_conv_shape is not None:
+            ph_prefixes = ("policy_head.", "_orig_mod.policy_head.")
+            policy_shape_mismatch = False
+            for k in list(sd.keys()):
+                if not k.startswith(ph_prefixes):
+                    continue
+                if not k.endswith("conv.weight"):
+                    continue
+                if tuple(sd[k].shape) != tuple(cur_conv_shape):
+                    policy_shape_mismatch = True
+                    break
+            if policy_shape_mismatch:
+                stripped = [k for k in sd if k.startswith(ph_prefixes)]
+                for k in stripped:
+                    sd.pop(k, None)
+                print(f"[Trainer] policy_head shape changed — dropping "
+                      f"{len(stripped)} legacy policy_head keys; head will "
+                      f"reinit from `_init_weights`.")
+
+        missing, unexpected = base_model.load_state_dict(sd, strict=False)
+        # Allowed-missing keys: parameters that the new arch introduces and
+        # that have a sensible default initialisation. Everything else is
+        # a real arch mismatch worth reporting.
+        _allowed_missing = ("piece_values",
+                            "_material_scale",
+                            "policy_head.conv.weight",
+                            "policy_head.conv.bias",
+                            "policy_head.norm.weight",
+                            "policy_head.norm.bias",
+                            "policy_head.fc.weight",
+                            "policy_head.fc.bias")
+        for m in missing:
+            if not any(m.endswith(s) for s in _allowed_missing):
+                print(f"[Trainer] WARNING: missing key on load: {m}")
+        for u in unexpected:
+            print(f"[Trainer] WARNING: unexpected key on load: {u}")
 
         if "optimizer" in state:
-            self.optimizer.load_state_dict(state["optimizer"])
+            # The optimizer state may reference the old fc_aux param tensors;
+            # if so, AdamW will silently mismatch param-group order. Wrap in
+            # try/except so a transition from old → new arch resets the
+            # optimizer state instead of crashing.
+            try:
+                self.optimizer.load_state_dict(state["optimizer"])
+            except (ValueError, KeyError, RuntimeError) as e:
+                # Losing AdamW moments means the first few hundred steps
+                # after resume will spike — log loudly so a regression in
+                # loss isn't blamed on the data instead of the resume.
+                print(f"[Trainer] *** WARNING: optimizer state could NOT be "
+                      f"restored ({type(e).__name__}: {e}). AdamW moments "
+                      f"reset to zero — expect a transient loss spike. ***",
+                      flush=True)
         if "scheduler" in state:
             self.scheduler.load_state_dict(state["scheduler"])
         if "scaler" in state:
@@ -433,6 +616,9 @@ class Trainer:
 
         self._dirichlet_eps  = state.get("dirichlet_eps",  self.cfg.dirichlet_eps)
         self._alpha_v_global = state.get("alpha_v_global", 1.0)
+        self._entropy_history = list(state.get("entropy_history", []))
+        if "replay_step" in state:
+            self.replay_buffer._step = int(state["replay_step"])
 
         # NOTE: do NOT manually fast-forward the scheduler here. Its
         # state_dict (loaded above) already restores last_epoch / _step_count,
@@ -440,6 +626,10 @@ class Trainer:
         # ValueError past total_steps).
 
         print(f"[Trainer] Loaded checkpoint at step {self.global_step}")
+
+        # Restore replay + teacher buffer snapshots if present (saved every
+        # buffer_save_every ckpts). Skipping is fine — they refill quickly.
+        self._load_buffers()
 
     # ── Arena match ───────────────────────────────────────────────────────
 

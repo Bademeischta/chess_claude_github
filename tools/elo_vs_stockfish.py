@@ -65,9 +65,22 @@ def main() -> int:
     args = ap.parse_args()
 
     if not args.stockfish or not Path(args.stockfish).exists():
-        print("[elo] Need a valid --stockfish path (or set "
-              "config.stockfish_path).")
-        return 1
+        # One last try: pick up a fresh install via the sentinel.
+        sentinel = Path(__file__).resolve().parent.parent / "runs" / ".stockfish_installed"
+        if sentinel.exists():
+            cand = sentinel.read_text(encoding="utf-8").strip()
+            if cand and cand != "FAILED" and Path(cand).exists():
+                args.stockfish = cand
+        if not args.stockfish or not Path(args.stockfish).exists():
+            print("[elo] No Stockfish binary found.")
+            print("[elo] Run once:  python tools/install_stockfish.py")
+            print("[elo] Or pass --stockfish <path-to-binary>.")
+            return 1
+
+    # Resolve to an absolute path. python-chess uses asyncio.subprocess on
+    # Windows, which fails to locate a relative path passed verbatim (the
+    # internal CreateProcess call doesn't apply CWD the way Popen does).
+    args.stockfish = str(Path(args.stockfish).resolve())
 
     update_config_from_dict(run_probe(write=False))
     device = torch.device(CONFIG.device)

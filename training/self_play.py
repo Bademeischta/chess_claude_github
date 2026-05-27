@@ -18,6 +18,7 @@ from __future__ import annotations
 import time
 import queue
 import threading
+import traceback
 from typing import List, Optional
 
 import numpy as np
@@ -183,6 +184,22 @@ class SelfPlayWorker:
 
         total = 0
 
+        def _next_record(stream, kind: str):
+            # next() on a crashed generator raises StopIteration, which Py3.7+
+            # converts to RuntimeError and which can otherwise look like a
+            # silent exit if stdout is buffered. Surface anything explicitly.
+            try:
+                return next(stream)
+            except StopIteration:
+                raise RuntimeError(
+                    f"[self_play] {kind} game_stream ended unexpectedly "
+                    f"(generator exhausted — should be infinite)"
+                )
+            except Exception as e:
+                print(f"[self_play] FATAL in {kind} stream: {e}", flush=True)
+                traceback.print_exc()
+                raise
+
         if n_standard > 0:
             if self._std_stream is None:
                 # Concurrency = the GPU-sized pool, but never wider than this
@@ -192,7 +209,7 @@ class SelfPlayWorker:
                                      n_games=pool)
                 self._std_stream = pmcts.game_stream(is_teacher=False)
             for _ in range(n_standard):
-                record = next(self._std_stream)
+                record = _next_record(self._std_stream, "standard")
                 positions = self._record_to_positions(record)
                 self.replay_buffer.add_batch(positions)
                 total += len(positions)
@@ -206,7 +223,7 @@ class SelfPlayWorker:
                                      n_games=pool)
                 self._tch_stream = pmcts.game_stream(is_teacher=True)
             for _ in range(n_teacher):
-                record = next(self._tch_stream)
+                record = _next_record(self._tch_stream, "teacher")
                 positions = self._record_to_positions(record)
                 self.teacher_buffer.add_batch(positions)
                 total += len(positions)

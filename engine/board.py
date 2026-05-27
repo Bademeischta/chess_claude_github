@@ -40,7 +40,15 @@ _proj_root = Path(__file__).resolve().parent.parent
 if str(_proj_root) not in sys.path:
     sys.path.insert(0, str(_proj_root))
 
+# Escape hatch: set CHESS_AI_NO_CPP=1 to force the python-chess fallback
+# even when the compiled extension is on disk. Use when chess_ext.pyd has
+# native memory-safety issues that cause access violations (the C++ code
+# has at least one such bug at the time of this comment).
+_DISABLE_CPP = os.environ.get("CHESS_AI_NO_CPP", "").lower() in ("1", "true", "yes")
+
 try:
+    if _DISABLE_CPP:
+        raise ImportError("CHESS_AI_NO_CPP=1 — forcing python-chess fallback")
     import chess_ext as _cx
     _CPP_AVAILABLE = True
 except ImportError:
@@ -206,7 +214,15 @@ else:
                         _pychess.QUEEN:  11, _pychess.ROOK:  10,
                         _pychess.BISHOP: 9,  _pychess.KNIGHT: 8,
                     }
-                    flags = promo_map.get(m.promotion, 11)
+                    # python-chess only emits Q/R/B/N for promotion. Anything
+                    # else means the underlying library produced an illegal
+                    # move and silently treating it as a queen would mask
+                    # the bug — fail loudly instead.
+                    if m.promotion not in promo_map:
+                        raise ValueError(
+                            f"Unsupported promotion piece type: {m.promotion!r}"
+                        )
+                    flags = promo_map[m.promotion]
                 moves.append(from_sq | (to_sq << 6) | (flags << 12))
             return moves
 

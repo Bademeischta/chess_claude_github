@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import traceback
 import numpy as np
 import torch
 from typing import List, Dict, Optional, Tuple
@@ -53,7 +54,11 @@ def fill_history(out: np.ndarray, board_history: list, T: int) -> np.ndarray:
 
 # ── Backend selection ─────────────────────────────────────────────────────
 
+_DISABLE_CPP = os.environ.get("CHESS_AI_NO_CPP", "").lower() in ("1", "true", "yes")
+
 try:
+    if _DISABLE_CPP:
+        raise ImportError("CHESS_AI_NO_CPP=1 — forcing python MCTS path")
     import chess_ext as _cx
     _USE_CPP = True
 except ImportError:
@@ -130,8 +135,12 @@ class MCTSTree:
             else TorchInferenceEngine(model)
 
         self.c_puct      = cfg.mcts_c_puct
-        self.dirichlet_a = cfg.dirichlet_alpha
-        self.dirichlet_e = cfg.dirichlet_eps
+        # Clamp dirichlet_alpha defensively: np.random.dirichlet crashes on
+        # alpha <= 0, and the ERED controller in trainer.py can push the eps
+        # towards zero — which would degenerate the distribution. Alpha is
+        # a static cfg value here, but we guard it anyway.
+        self.dirichlet_a = max(float(cfg.dirichlet_alpha), 0.01)
+        self.dirichlet_e = max(float(cfg.dirichlet_eps), 0.0)
 
         # History buffer: keeps the last `history_len` board tensors
         self._board_history: list = []  # list of (21,8,8) np.ndarray
@@ -189,7 +198,15 @@ class MCTSTree:
             self._board_history = self._board_history[-self.cfg.gru_history_len:]
 
         if _USE_CPP:
-            self._root_node = self._cpp_tree.advance_root(played_move)
+            # If select_move had to use the empty-children fallback, the C++
+            # subtree is in an inconsistent state. Wipe it via new_root()
+            # instead of advance_root() so the next selection cycle starts
+            # from a fresh, well-formed node.
+            if getattr(self, "_needs_cpp_reset", False):
+                self._root_node = self._cpp_tree.new_root(0, 1.0)
+                self._needs_cpp_reset = False
+            else:
+                self._root_node = self._cpp_tree.advance_root(played_move)
         else:
             child = self._root_node.children.get(played_move)
             if child is None:
@@ -411,6 +428,50 @@ class MCTSTree:
         Select a move and return (move_int, policy_target_array).
         policy_target_array has shape (num_actions,) with visit fractions.
         """
+        # Defensive guard against a known native crash in chess_ext: the C++
+        # MCTSNode::sample_move() starts with `assert(!children.empty())`
+        # which is a no-op in release builds, then iterates over an empty
+        # `children` map and hits undefined behaviour (Windows access
+        # violation). The faulthandler catches it but the process still dies.
+        # Prevent the call from ever happening on an unexpanded / leafless
+        # root by checking the count first, and fall back to a uniform pick
+        # from the board's legal moves when the tree is degenerate.
+        if _USE_CPP:
+            try:
+                n_children = int(self._root_node.get_children_count())
+            except Exception:
+                n_children = 0
+            if n_children == 0:
+                # Root not expanded (this signals a search-path bug upstream).
+                # Don't crash the whole self-play pool — pick any legal move
+                # so the game can finish, and log loudly so the FEN is in the
+                # transcript for diagnosis.
+                try:
+                    fen = self._root_board.to_fen()
+                except Exception:
+                    fen = "<no-fen>"
+                print(f"[MCTSTree] WARN: root has 0 children, "
+                      f"falling back to first legal move. FEN={fen}",
+                      flush=True)
+                from engine.movegen import generate_legal_moves
+                legal = list(generate_legal_moves(self._root_board))
+                if not legal:
+                    # No legal moves — return a sentinel; caller will treat
+                    # this as game-over on the next get_game_result() check.
+                    return 0, np.zeros(self.cfg.num_actions, dtype=np.float32)
+                move = legal[0]
+                pt = np.zeros(self.cfg.num_actions, dtype=np.float32)
+                stm = self._root_board.side_to_move
+                idx = move_to_action_index(move, stm)
+                if idx >= 0:
+                    pt[idx] = 1.0
+                # CRITICAL: mark the C++ tree as "needs a clean root next
+                # advance" so we don't carry an inconsistent subtree forward.
+                # advance() reads this flag and calls new_root() instead of
+                # advance_root() when set, wiping any orphaned C++ state.
+                self._needs_cpp_reset = True
+                return move, pt
+
         # Same API on both backends (C++ chess_ext node and Python _PyNode).
         move  = self._root_node.sample_move(temperature)
         pairs = self._root_node.get_policy_target()
@@ -592,6 +653,13 @@ class ParallelMCTS:
         self.engine = build_inference_engine(cfg, model, device)
         self.trees  = [MCTSTree(cfg, model, device, engine=self.engine)
                        for _ in range(self.n)]
+        # Reusable fp32 scratch for fill_history; one allocation for the
+        # lifetime of the pool instead of one per recorded position.
+        # The fp16 copy at recording time is unavoidable (each record needs
+        # its own storage in the replay buffer).
+        self._hist_scratch = np.zeros(
+            (cfg.gru_history_len, cfg.input_planes, 8, 8), dtype=np.float32
+        )
 
     @torch.inference_mode()
     def _batch_begin_search(
@@ -798,6 +866,11 @@ class ParallelMCTS:
         boards    = [self._fresh_board() for _ in range(self.n)]
         records   = [GameRecord() for _ in range(self.n)]
         move_nums = [0] * self.n
+        # Per-game resign counter: streaks[i][0/1] = consecutive moves where
+        # white/black saw root_value < -resign_q from their own perspective.
+        resign_q     = getattr(self.cfg, "resign_q", 0.0)
+        resign_limit = getattr(self.cfg, "resign_streak", 0)
+        streaks      = [[0, 0] for _ in range(self.n)]
         for rec in records:
             rec.is_teacher = is_teacher
 
@@ -805,6 +878,7 @@ class ParallelMCTS:
         fresh  = set(active)  # every slot starts a brand-new game
 
         while True:
+          try:
             # 1) Expand roots with ONE batched GPU forward. `fresh` slots reset
             #    + re-seed history; the rest reuse their advanced subtree.
             self._batch_begin_search(active, boards, fresh=fresh)
@@ -831,15 +905,32 @@ class ParallelMCTS:
                 rec = records[i]
                 rec.board_tensors.append(board.to_tensor().astype(np.float16))
                 rec.policy_targets.append(policy_target)
-                rec.mcts_qs.append(tree.root_value())
+                q_root = tree.root_value()
+                rec.mcts_qs.append(q_root)
                 rec.move_numbers.append(mn)
                 rec.phases.append(board.get_phase())
                 rec.piece_counts.append(board.piece_count())
 
-                hist_buf = np.zeros((T, self.cfg.input_planes, 8, 8),
-                                    dtype=np.float32)
-                fill_history(hist_buf, tree._board_history, T)
-                rec.history_tensors.append(hist_buf.astype(np.float16))
+                # Reuse the pool-wide scratch; fill_history overwrites it
+                # in place. Zero it first so stale frames from an older,
+                # longer game don't leak through when board_history is short.
+                self._hist_scratch.fill(0.0)
+                fill_history(self._hist_scratch, tree._board_history, T)
+                rec.history_tensors.append(
+                    self._hist_scratch.astype(np.float16)  # owned copy
+                )
+
+                # Resign tracking — track consecutive low-Q moves PER SIDE.
+                # `mn % 2` is the side to move BEFORE this move (0=white,1=black);
+                # root_value is from that side's perspective. Disable resign
+                # before move 20 — early-opening Q is too noisy when the net
+                # is weak, and false resigns bias the training distribution
+                # toward pessimism in book positions.
+                side = mn % 2
+                if resign_limit > 0 and mn >= 20 and q_root < -resign_q:
+                    streaks[i][side] += 1
+                else:
+                    streaks[i][side] = 0
 
                 new_board = board.apply_move(move)
                 tree.advance(move, new_board)
@@ -847,6 +938,16 @@ class ParallelMCTS:
                 move_nums[i] += 1
 
                 result = get_game_result(new_board)
+                resign_loser = None
+                if resign_limit > 0:
+                    if streaks[i][0] >= resign_limit:
+                        resign_loser = 0  # white resigns
+                    elif streaks[i][1] >= resign_limit:
+                        resign_loser = 1  # black resigns
+                    if resign_loser is not None and result == GameResult.ONGOING:
+                        result = (GameResult.BLACK_WIN if resign_loser == 0
+                                  else GameResult.WHITE_WIN)
+
                 if (result != GameResult.ONGOING
                         or move_nums[i] >= self.cfg.max_game_moves):
                     self._finalize_record(rec, result)
@@ -857,8 +958,24 @@ class ParallelMCTS:
                     records[i]   = GameRecord()
                     records[i].is_teacher = is_teacher
                     move_nums[i] = 0
+                    streaks[i]   = [0, 0]
                     fresh.add(i)
                     yield finished
 
             # `active` is constant (= the full pool); slots are recycled in
             # place rather than dropped, so the batch never shrinks.
+          except Exception as e:
+            # Surface ANY crash from inside the loop. Without this wrapper a
+            # native-extension fault or unexpected exception kills the
+            # generator silently, which from the consumer side looks like
+            # the whole process just exited.
+            print(f"[game_stream] FATAL: {type(e).__name__}: {e}", flush=True)
+            try:
+                cur_fens = [b.fen() if hasattr(b, "fen") else "<no-fen>"
+                            for b in boards]
+                print(f"[game_stream] boards at crash: {cur_fens}", flush=True)
+                print(f"[game_stream] move_nums: {move_nums}", flush=True)
+            except Exception:
+                pass
+            traceback.print_exc()
+            raise

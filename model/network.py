@@ -110,6 +110,8 @@ class ChessNet(nn.Module):
         history_len: int = 8,
         num_actions: int = 4672,
         grad_ckpt_from: int = 4,
+        policy_mid_channels: int = 32,
+        material_scale: float = 12.0,
     ) -> None:
         super().__init__()
 
@@ -146,8 +148,16 @@ class ChessNet(nn.Module):
         self.blocks = nn.ModuleList(blocks)
 
         # ── Heads ─────────────────────────────────────
-        self.policy_head = PolicyHead(in_channels=channels, num_actions=num_actions)
-        self.value_head  = ValueHead(in_channels=channels, hidden_size=256)
+        self.policy_head = PolicyHead(
+            in_channels=channels,
+            num_actions=num_actions,
+            mid_channels=policy_mid_channels,
+        )
+        self.value_head  = ValueHead(
+            in_channels=channels,
+            hidden_size=256,
+            material_scale=material_scale,
+        )
 
         self._init_weights()
 
@@ -190,6 +200,19 @@ class ChessNet(nn.Module):
                               device=board.device, dtype=board.dtype)
             x = torch.cat([board, pad], dim=1)            # (B, 25, 8, 8)
 
+        # Material differential from board planes, oriented to side-to-move.
+        # Planes 0-5 = white {P,N,B,R,Q,K} counts (each cell is 0/1).
+        # Planes 6-11 = black {P,N,B,R,Q,K}.
+        # Plane 12 = side-to-move flag (broadcast: 1.0 if white-to-move, else 0).
+        # We orient the diff so positive ⇒ side-to-move is ahead in material,
+        # matching the WDL label convention.
+        white_count = board[:, 0:6].sum(dim=(2, 3))        # (B, 6)
+        black_count = board[:, 6:12].sum(dim=(2, 3))       # (B, 6)
+        # Side-to-move: take a single cell; the plane is broadcast-constant.
+        stm_white = board[:, 12, 0, 0]                     # (B,)
+        sign = (stm_white * 2.0 - 1.0).unsqueeze(1)        # (B, 1): +1 / -1
+        material_diff = (white_count - black_count) * sign  # (B, 6)
+
         x = self.input_proj(x)  # (B, 256, 8, 8)
 
         for i, block in enumerate(self.blocks):
@@ -200,7 +223,7 @@ class ChessNet(nn.Module):
                 x = block(x)
 
         policy_logits = self.policy_head(x)
-        wdl, aux      = self.value_head(x)
+        wdl, aux      = self.value_head(x, material_diff=material_diff)
         return policy_logits, wdl, aux
 
     # ── Inference-only forward (no GRU, no checkpointing) ─────────────────
@@ -264,6 +287,8 @@ def build_model(cfg, compile_model: bool = True) -> ChessNet:
         gru_layers    = cfg.gru_layers,
         history_len   = cfg.gru_history_len,
         num_actions   = cfg.num_actions,
+        policy_mid_channels = getattr(cfg, "policy_mid_channels", 32),
+        material_scale      = getattr(cfg, "material_scale", 12.0),
     )
 
     device = torch.device(cfg.device)
