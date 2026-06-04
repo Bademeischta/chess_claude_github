@@ -75,10 +75,25 @@ class Trainer:
             head_mult     = cfg.lr_head_mult,
             gru_mult      = cfg.lr_gru_mult,
         )
-        self.optimizer = torch.optim.AdamW(
-            param_groups,
-            weight_decay = cfg.weight_decay,
-        )
+        # Fused AdamW: a single CUDA kernel for the per-tensor update instead
+        # of many element-wise launches. Up to ~15 % step-time win on CUDA
+        # and zero behaviour change. Only available on CUDA (no fused path on
+        # CPU/MPS) — silently fall back to the standard implementation
+        # elsewhere or on older PyTorch (<2.0).
+        _fused_ok = (self.device.type == "cuda")
+        try:
+            self.optimizer = torch.optim.AdamW(
+                param_groups,
+                weight_decay = cfg.weight_decay,
+                fused        = _fused_ok,
+            )
+        except (RuntimeError, TypeError):
+            # Older PyTorch without `fused` kwarg, or a CUDA build that
+            # rejects fused for this param-group layout.
+            self.optimizer = torch.optim.AdamW(
+                param_groups,
+                weight_decay = cfg.weight_decay,
+            )
 
         # ── LR scheduler (Cosine Annealing with linear warmup) ─────────
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -92,13 +107,20 @@ class Trainer:
         )
 
         # ── Mixed precision ────────────────────────────────────────────
-        if cfg.precision in ("bf16", "fp16"):
-            self._amp_dtype = torch.bfloat16 if cfg.precision == "bf16" else torch.float16
-            # GradScaler only needed for fp16 (bf16 doesn't need loss scaling)
-            self._scaler = GradScaler(enabled=(cfg.precision == "fp16"))
+        # BF16 has the same dynamic range as FP32, so it does NOT need loss
+        # scaling. Only FP16 needs a GradScaler. Keep `_scaler` as None for
+        # bf16/fp32 so the backward path is a clean `loss.backward()` /
+        # `optimizer.step()` instead of bouncing through Scaler hooks that
+        # would no-op anyway.
+        if cfg.precision == "fp16":
+            self._amp_dtype = torch.float16
+            self._scaler = GradScaler(enabled=True)
+        elif cfg.precision == "bf16":
+            self._amp_dtype = torch.bfloat16
+            self._scaler = None
         else:
-            self._amp_dtype   = torch.float32
-            self._scaler      = GradScaler(enabled=False)
+            self._amp_dtype = torch.float32
+            self._scaler = None
 
         # ── Entropy-Regulated Exploration Decay state ──────────────────
         self._dirichlet_eps   = cfg.dirichlet_eps
@@ -107,6 +129,22 @@ class Trainer:
 
         # ── Auxiliary loss (active for first `aux_steps` steps) ────────
         self._aux_active = True
+
+        # ── Sync-cost mitigation state ─────────────────────────────────
+        # NaN guard runs every N steps (+ tight window after a hit) instead
+        # of every step — `if not torch.isfinite(loss):` is an implicit
+        # cudaDeviceSynchronize and dominated step cost in profiling.
+        self._nan_check_every = 50
+        self._nan_suspect = 0        # steps remaining of tight-mode after a hit
+        # PER priority update can run with one-step latency without harm —
+        # defer the device→host copy so it overlaps the next forward.
+        self._deferred_td_update: tuple | None = None
+        # Anchor tensor for the piece-value L2 pull (kept on device, allocated
+        # once instead of every train_step).
+        self._piece_value_anchor = torch.tensor(
+            [1.0, 3.0, 3.0, 5.0, 9.0, 0.0],
+            dtype=torch.float32, device=self.device,
+        )
 
         # ── PER beta tracking ──────────────────────────────────────────
         self._per_beta  = cfg.per_beta_start
@@ -169,6 +207,14 @@ class Trainer:
         if not self.replay_buffer.is_ready(self.cfg.replay_start_training):
             return {}
 
+        # ── Apply deferred PER priority update from the previous step ─
+        # The TD-errors from train_step(t-1) were copied async; their D2H
+        # is finished by now (a full forward+backward+step happened since).
+        if self._deferred_td_update is not None:
+            prev_idx, prev_td = self._deferred_td_update
+            self.replay_buffer.update_priorities(prev_idx, prev_td.numpy())
+            self._deferred_td_update = None
+
         # ── Sample from replay buffer ─────────────────────────────────
         n_replay  = int(self.cfg.batch_size * (1.0 - self.cfg.teacher_batch_ratio))
         n_teacher = self.cfg.batch_size - n_replay
@@ -195,13 +241,17 @@ class Trainer:
             boards_t, hist_t, pol_t, wdl_t, mq_t, ph_t, mn_t = to_batch(teacher_records)
 
         # ── Move to device ────────────────────────────────────────────
-        _pin = (self.device.type == "cuda")
+        # NOTE: inline `Tensor.pin_memory()` is a *synchronous* pageable→pinned
+        # copy on the main thread and only pays off when the copy is hidden
+        # behind a background DataLoader worker. Doing it inline costs more
+        # than the resulting async H2D saves, so we drop it. If a real
+        # DataLoader path is added (see plan §3.4 Variant B), reintroduce
+        # pin_memory=True at the loader level.
+        _cuda = (self.device.type == "cuda")
 
         def to_device(arr, dtype=torch.float32):
             t = torch.from_numpy(np.ascontiguousarray(arr))
-            if _pin:
-                t = t.pin_memory()
-            return t.to(device=self.device, dtype=dtype, non_blocking=_pin)
+            return t.to(device=self.device, dtype=dtype, non_blocking=False)
 
         board_r  = to_device(boards_r, self._amp_dtype)
         hist_r_t = to_device(hist_r,   self._amp_dtype)
@@ -281,11 +331,9 @@ class Trainer:
             base_model = (self.model._orig_mod
                           if hasattr(self.model, "_orig_mod") else self.model)
             pv = base_model.value_head.piece_values
-            anchor = torch.tensor(
-                [1.0, 3.0, 3.0, 5.0, 9.0, 0.0],
-                dtype=pv.dtype, device=pv.device,
-            )
-            pv_anchor_loss = F.mse_loss(pv, anchor)
+            # Use the cached anchor (built once in __init__) instead of
+            # allocating a fresh tensor every step.
+            pv_anchor_loss = F.mse_loss(pv.float(), self._piece_value_anchor)
             loss = loss + anchor_w * pv_anchor_loss
 
         # Teacher loss: KL divergence against teacher policy (soft targets)
@@ -304,22 +352,34 @@ class Trainer:
         # ── NaN/Inf guard: skip the step if loss is non-finite. A single
         # backward with NaN gradients permanently corrupts AdamW's second
         # moments, so it's better to drop the batch than to poison state.
-        if not torch.isfinite(loss):
+        # `torch.isfinite(loss)` followed by a Python truthiness check is an
+        # implicit cudaDeviceSynchronize — too expensive to do every step.
+        # Sample every N steps in normal operation; after any hit, run tight
+        # for a window so a burst of NaNs is caught immediately.
+        do_nan_check = (
+            (self.global_step % self._nan_check_every == 0)
+            or self._nan_suspect > 0
+        )
+        if do_nan_check and not torch.isfinite(loss):
             print(f"[Trainer] WARN: non-finite loss at step {self.global_step} "
-                  f"(loss={loss.item() if loss.numel()==1 else 'tensor'}); "
-                  f"skipping update", flush=True)
+                  f"— skipping update", flush=True)
             self.optimizer.zero_grad(set_to_none=True)
             self.global_step += 1
+            self._nan_suspect = 10  # tight-mode for the next few steps
             return {"loss": float("nan"), "skipped": 1.0}
+        if self._nan_suspect > 0:
+            self._nan_suspect -= 1
 
         # ── Backward ─────────────────────────────────────────────────
-        if self._amp_dtype == torch.float16:
+        if self._scaler is not None:
+            # FP16 path: loss scaling required.
             self._scaler.scale(loss).backward()
             self._scaler.unscale_(self.optimizer)
             nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
             self._scaler.step(self.optimizer)
             self._scaler.update()
         else:
+            # BF16 / FP32 path: clean backward, no scaler overhead.
             loss.backward()
             nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
             self.optimizer.step()
@@ -328,8 +388,13 @@ class Trainer:
             self.scheduler.step()
 
         # ── PER priority update ───────────────────────────────────────
-        td_errors = td_err_gpu.cpu().numpy()
-        self.replay_buffer.update_priorities(indices, td_errors)
+        # Defer the device→host copy by one step. By the time the NEXT
+        # train_step starts (after a forward+backward worth of GPU work),
+        # the pinned-host destination is guaranteed populated — so this
+        # non-blocking copy never adds a sync to the current iteration.
+        td_pinned = torch.empty_like(td_err_gpu, device="cpu", pin_memory=True)
+        td_pinned.copy_(td_err_gpu, non_blocking=True)
+        self._deferred_td_update = (indices, td_pinned)
         self.replay_buffer.step()
 
         # ── Entropy-Regulated Exploration Decay ──────────────────────
@@ -348,21 +413,13 @@ class Trainer:
             if buf_every > 0 and self.global_step % buf_every == 0:
                 self._save_buffers()
 
-        # Cheap policy entropy for *logging* every step (the ERED regulation
-        # in _regulate_entropy stays on its 5000-step cadence and is unchanged
-        # — this is display-only so H is never a stale nan).
-        with torch.no_grad():
-            _lp  = F.log_softmax(policy_logits_r.float(), dim=-1)
-            _ent = float((-(_lp.exp() * _lp).sum(-1)).mean().item())
-
         # ── Metrics ───────────────────────────────────────────────────
-        metrics = {
-            "policy_entropy":    _ent,
-            "loss/total":        float(loss.item()),
-            "loss/policy":       float(policy_loss_r.mean().item()),
-            "loss/value":        float(value_loss_r.mean().item()),
-            "loss/teacher_kl":   float(teacher_loss.item()),
-            "loss/aux":          float(aux_loss.item()),
+        # Scalar .item() calls each force a cudaDeviceSynchronize. Strategy:
+        # ALWAYS surface `loss/total` (one D2H — cheap enough, callers and
+        # integration tests depend on it), but only collect the rest on the
+        # logging cadence (~6 → 1 sync per non-log step).
+        metrics: dict = {
+            "loss/total":        float(loss.detach().cpu()),
             "lr":                self.optimizer.param_groups[0]["lr"],
             "dirichlet_eps":     self._dirichlet_eps,
             "alpha_v_global":    self._alpha_v_global,
@@ -370,7 +427,49 @@ class Trainer:
             "teacher_buf_size":  len(self.teacher_buffer),
             "global_step":       self.global_step,
         }
+        if self.global_step % self.cfg.log_every == 0:
+            with torch.no_grad():
+                _lp = F.log_softmax(policy_logits_r.float(), dim=-1)
+                ent = -(_lp.exp() * _lp).sum(-1).mean()
+            # Single D2H roundtrip for the remaining diagnostic scalars.
+            scalars = torch.stack([
+                policy_loss_r.mean().detach(),
+                value_loss_r.mean().detach(),
+                teacher_loss.detach().reshape(()),
+                aux_loss.detach(),
+                ent,
+            ]).cpu()
+            metrics.update({
+                "loss/policy":     float(scalars[0]),
+                "loss/value":      float(scalars[1]),
+                "loss/teacher_kl": float(scalars[2]),
+                "loss/aux":        float(scalars[3]),
+                "policy_entropy":  float(scalars[4]),
+            })
         return metrics
+
+    # ── Emergency snapshot (called between batches; crash-resilience) ────
+
+    def emergency_save(self) -> str:
+        """
+        Write a lightweight `latest.pt` next to the regular checkpoints.
+
+        Called from the self-play phase loops between batches so that even
+        if the process dies hard (C++ access violation in chess_ext, OOM,
+        power loss) the most we lose is one batch's worth of work — not
+        the full `checkpoint_every` interval.
+
+        Overwrites a single file so disk usage stays bounded. The replay
+        buffer is NOT dumped here (too heavy for per-batch frequency); the
+        regular `save_checkpoint` cadence handles that.
+        """
+        path = str(Path(self.cfg.checkpoint_dir) / "latest.pt")
+        try:
+            return self.save_checkpoint(path)
+        except Exception as e:  # noqa: BLE001 — never let bookkeeping crash training
+            print(f"[Trainer] emergency_save skipped: "
+                  f"{type(e).__name__}: {e}", flush=True)
+            return ""
 
     # ── Entropy regulation ────────────────────────────────────────────────
 
@@ -429,7 +528,9 @@ class Trainer:
             "model":       base_model.state_dict(),
             "optimizer":   self.optimizer.state_dict(),
             "scheduler":   self.scheduler.state_dict(),
-            "scaler":      self._scaler.state_dict(),
+            # `_scaler` is None for bf16/fp32; serialize an empty dict so
+            # load_checkpoint can no-op-resolve regardless of run precision.
+            "scaler":      self._scaler.state_dict() if self._scaler is not None else None,
             "dirichlet_eps":  self._dirichlet_eps,
             "alpha_v_global": self._alpha_v_global,
             # ERED state — persist so a resumed run doesn't restart the
@@ -504,20 +605,56 @@ class Trainer:
                     state = pickle.load(f)
                 # SECURITY: only ever load buffer dumps this process wrote
                 # itself / from a trusted local checkpoint dir.
-                self.replay_buffer._data       = state["data"]
-                self.replay_buffer._priorities = state["priorities"]
-                self.replay_buffer._ptr        = state["ptr"]
-                self.replay_buffer._size       = state["size"]
+                #
+                # Capacity reconciliation: the system probe re-derives
+                # `replay_buffer_cap` per run (depending on available RAM),
+                # so the on-disk snapshot can be shorter OR longer than the
+                # freshly constructed buffer's `_data` / `_priorities`. We
+                # resize both to the current capacity instead of replacing
+                # them outright, otherwise `_ptr % capacity` walks past
+                # the loaded list's end and IndexError's on the next add().
+                import numpy as _np
+                cap   = self.replay_buffer.capacity
+                d     = list(state["data"])
+                p     = state["priorities"]
+                old_n = len(d)
+                if old_n < cap:
+                    # Pad with None / 0.0 so indices in [old_n, cap) are valid.
+                    d.extend([None] * (cap - old_n))
+                    p_full = _np.zeros(cap, dtype=_np.float32)
+                    p_full[:old_n] = p
+                    p = p_full
+                elif old_n > cap:
+                    # New buffer is smaller — keep the most recent `cap`
+                    # entries (the ring buffer's tail) and reset _ptr.
+                    keep_from = old_n - cap
+                    d = d[keep_from:]
+                    p = p[keep_from:]
+                self.replay_buffer._data       = d
+                self.replay_buffer._priorities = p
+                # Clamp restored bookkeeping to the new capacity.
+                self.replay_buffer._size = min(int(state["size"]), cap)
+                self.replay_buffer._ptr  = int(state["ptr"]) % cap
                 self.replay_buffer._step       = state["step"]
                 self.replay_buffer._max_prio   = state["max_prio"]
+                if old_n != cap:
+                    print(f"[Trainer] Replay buffer capacity changed "
+                          f"({old_n:,} → {cap:,}); resized snapshot.")
                 print(f"[Trainer] Replay buffer restored "
                       f"({len(self.replay_buffer):,} positions)")
             if teacher_path.exists():
                 with gzip.open(teacher_path, "rb") as f:
                     state = pickle.load(f)
-                self.teacher_buffer._data = state["data"]
-                self.teacher_buffer._ptr  = state["ptr"]
-                self.teacher_buffer._size = state["size"]
+                # Same capacity-reconciliation as the main replay buffer.
+                cap = self.teacher_buffer.capacity
+                d = list(state["data"])
+                if len(d) < cap:
+                    d.extend([None] * (cap - len(d)))
+                elif len(d) > cap:
+                    d = d[len(d) - cap:]
+                self.teacher_buffer._data = d
+                self.teacher_buffer._size = min(int(state["size"]), cap)
+                self.teacher_buffer._ptr  = int(state["ptr"]) % cap
                 print(f"[Trainer] Teacher buffer restored "
                       f"({len(self.teacher_buffer):,} positions)")
         except Exception as e:  # noqa: BLE001
@@ -611,7 +748,7 @@ class Trainer:
                       flush=True)
         if "scheduler" in state:
             self.scheduler.load_state_dict(state["scheduler"])
-        if "scaler" in state:
+        if "scaler" in state and state["scaler"] is not None and self._scaler is not None:
             self._scaler.load_state_dict(state["scaler"])
 
         self._dirichlet_eps  = state.get("dirichlet_eps",  self.cfg.dirichlet_eps)

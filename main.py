@@ -26,9 +26,11 @@ from pathlib import Path
 # crash exits the process silently with no traceback.
 faulthandler.enable()
 
-# Surface CUDA errors at the launch site instead of asynchronously deep in an
-# unrelated kernel. Pay the small perf cost during dev; users can override.
-os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+# NOTE: CUDA_LAUNCH_BLOCKING is intentionally NOT defaulted here. Setting it
+# serialises every CUDA kernel and costs 2-5x throughput. For pin-pointing
+# async CUDA errors during debug, set it explicitly:
+#   PowerShell:  $env:CUDA_LAUNCH_BLOCKING = "1"; python main.py ...
+# faulthandler already gives us tracebacks for hard crashes.
 
 # Force UTF-8 output on Windows so Unicode chars in print() don't crash
 if sys.platform == "win32":
@@ -139,9 +141,41 @@ def initialise_system(args) -> torch.device:
     # CUDA setup
     device = torch.device(CONFIG.device)
     if device.type == "cuda":
+        # TF32 for matmul + cudnn convs (Ampere / Ada / Blackwell): essentially
+        # free vs. fp32 precision-wise, ~2-3× faster.
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        # cudnn autotuner picks the best conv kernel for each new shape — we
+        # have static shapes so the one-shot tune is pure win.
         torch.backends.cudnn.benchmark  = True
+        # Tells the matmul dispatcher it may use TF32 / BF16 internal precision
+        # for fp32 matmuls (the GRU encoder is forced fp32 for cuDNN's RNN
+        # fastpath, so this is its main beneficiary). 'high' = TF32 if
+        # available, no behaviour change otherwise.
+        try:
+            torch.set_float32_matmul_precision("high")
+        except AttributeError:
+            pass  # PyTorch < 1.12
+
+        # Prefer flash / mem-efficient SDPA kernels over the math backend —
+        # no Attention in the current ChessNet, but harmless and ready if a
+        # future variant adds one. Guarded for older PyTorch versions.
+        try:
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(False)
+        except AttributeError:
+            pass  # PyTorch < 2.0
+
+    # Allocator: expandable segments cut VRAM fragmentation in long runs
+    # (a 4-day training session can otherwise OOM on a 12 GB card just from
+    # heap fragmentation, with plenty of total free VRAM). max_split_size
+    # keeps the allocator from holding back tiny fragments. setdefault so a
+    # user-provided override wins.
+    os.environ.setdefault(
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "max_split_size_mb:256,expandable_segments:True",
+    )
 
     # Tablebases
     if CONFIG.syzygy_path:
@@ -455,6 +489,13 @@ def phase_selfplay(
               f"{pos_s:.0f} pos/s | {g_hr:.0f} games/hr | "
               f"step={trainer.global_step}", flush=True)
 
+        # Emergency snapshot every N batches → bounds crash-loss to a few
+        # minutes (a native chess_ext access violation kills the process
+        # mid-batch; the supervisor restarts from latest.pt).
+        _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
+        if _emerg_n > 0 and batch_num % _emerg_n == 0:
+            trainer.emergency_save()
+
         # Arena evaluation
         if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
             opp_path = pool.best_opponent_path()
@@ -497,7 +538,10 @@ def phase_distillation(
     print("─" * 40)
 
     games = 0
+    batch_num = 0
+    _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
+        batch_num += 1
         n_new = worker.generate_batch(n_games=CONFIG.parallel_games)
         games += CONFIG.parallel_games
 
@@ -506,6 +550,9 @@ def phase_distillation(
             if metrics:
                 logger.log({**metrics, **logger.get_vram_metrics()},
                            trainer.global_step)
+
+        if _emerg_n > 0 and batch_num % _emerg_n == 0:
+            trainer.emergency_save()
 
         if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
             opp_path = pool.best_opponent_path()
@@ -545,7 +592,10 @@ def phase_refinement(
         pg["lr"] *= 0.1
 
     games = 0
+    batch_num = 0
+    _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
+        batch_num += 1
         n_new = worker.generate_batch(n_games=CONFIG.parallel_games)
         games += CONFIG.parallel_games
 
@@ -554,6 +604,9 @@ def phase_refinement(
             if metrics:
                 logger.log({**metrics, **logger.get_vram_metrics()},
                            trainer.global_step)
+
+        if _emerg_n > 0 and batch_num % _emerg_n == 0:
+            trainer.emergency_save()
 
         if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
             opp_path = pool.best_opponent_path()

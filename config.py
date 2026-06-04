@@ -20,10 +20,15 @@ class ChessAIConfig:
 
     # ── Inference backend (self-play / arena / --play only; training always
     #    uses eager PyTorch) ───────────────────────────────────────────────
-    # "torch" (default, zero behaviour change) | "onnx".
-    # ONNX needs onnxruntime-gpu + a GPU execution provider; it falls back to
-    # torch automatically if anything is missing.
-    inference_backend: str = "torch"
+    # "cudagraph" (default — CUDA Graph capture of the inference forward at a
+    #              fixed batch=parallel_games; eliminates per-call kernel
+    #              launch overhead; ~1.3-2× faster than eager on small-spatial
+    #              chess inputs. Silently falls back to eager torch if capture
+    #              fails for any reason — never blocks self-play.)
+    # "torch"     (eager PyTorch, identical to model.infer)
+    # "onnx"      (onnxruntime with GPU execution provider; needs
+    #              `onnxruntime-gpu` and a supported provider)
+    inference_backend: str = "cudagraph"
     onnx_provider: str = "cuda"      # "cuda" | "trt" | "cpu"
     onnx_reexport_every: int = 5_000  # re-export .onnx every N train steps
 
@@ -38,6 +43,12 @@ class ChessAIConfig:
     # Net2Net deepen tool (model/net2net.py, `python main.py --grow`).
     num_res_blocks: int = 10       # Number of residual blocks
     se_every_n: int = 4            # Insert SE block every N res-blocks
+    # Gradient checkpointing: trade 20-30% backward speed for activation
+    # memory. With 10 blocks × 256 ch + BF16 + B=512 the activations are
+    # ~0.3 GB and easily fit on a 12 GB RTX 5070, so checkpointing wastes
+    # compute. `None` = auto: disable when num_res_blocks ≤ 14, enable from
+    # block 4 onwards otherwise. Set an int explicitly to override.
+    grad_ckpt_from: int | None = None
     gru_hidden: int = 256          # GRU hidden state dimension
     gru_layers: int = 2            # GRU depth
     gru_history_len: int = 8       # How many past boards to feed the GRU
@@ -88,14 +99,16 @@ class ChessAIConfig:
     # values interpretable without locking them — set to 0.0 to disable.
     piece_value_anchor_weight: float = 1e-3
 
-    aux_loss_weight: float = 0.6  # bumped from 0.2 to break the
-                                  # "value head sits at 0 because everything
-                                  # is a draw" deadlock during bootstrap.
-                                  # The material-balance aux head gives the
-                                  # value head a non-trivial gradient even
-                                  # when WDL labels are all 0.5 (draws).
-                                  # Once decisive games dominate the buffer
-                                  # this can be lowered back to ~0.2.
+    aux_loss_weight: float = 0.9  # 0.2 → 0.6 → 0.9: bootstrap is stuck in
+                                  # the "value head sits at 0 because every
+                                  # game is a draw" deadlock for far longer
+                                  # than predicted. Cranking the aux head
+                                  # weight up gives the value tower a
+                                  # dominant gradient from the material-
+                                  # balance signal, which is non-trivial
+                                  # on most positions even when WDL labels
+                                  # collapse to 0.5. Once decisive games
+                                  # dominate the buffer, drop back to ~0.2.
     aux_steps: int = 5_000        # legacy: no longer consulted by the trainer
 
     # ── TD(λ) value blending ─────────────────────────────────────────────
@@ -153,19 +166,26 @@ class ChessAIConfig:
     # tails and raises the share of self-play games with a decisive winner —
     # critical in early training when most games hit the move cap as draws,
     # collapsing the value-loss to 0. Set resign_streak=0 to disable.
-    # Lowered from 0.85/8 to 0.70/6 for bootstrap: with a weak value head
-    # the absolute root-Q rarely reaches 0.85, so a strict threshold never
-    # fires and every hopeless game runs to the move cap as a draw. The
-    # 20-move gate (added in mcts/tree.py) keeps early-opening noise out.
-    resign_q: float = 0.70
+    # 0.85/8 → 0.70/6 → 0.55/6 for bootstrap: with a weak value head the
+    # absolute root-Q rarely reaches the higher thresholds, so a strict
+    # gate never fires and every hopeless game runs to the move cap as a
+    # draw. 0.55 means "side-to-move's Q says it's roughly 78 % losing for
+    # six consecutive moves" — still conservative enough not to resign
+    # equal positions, but it actually fires during bootstrap. The 20-move
+    # gate (added in mcts/tree.py) keeps early-opening noise out.
+    resign_q: float = 0.55
     resign_streak: int = 6
 
     # ── Opening diversity (anti-overfitting on a few openings) ───────────
     # Each self-play game starts from a position obtained by playing this many
     # uniform-random legal plies from the standard start (NOT recorded as
     # training targets). 0 = always start from the standard position
-    # (unchanged behaviour). A value of 6–10 markedly diversifies replay data.
-    random_opening_plies: int = 8
+    # (unchanged behaviour). 8 → 14: bootstrap is draw-collapse-bound, and
+    # the strongest lever against that is "ensure each game starts from a
+    # MATERIALLY UNBALANCED position" so the value head sees decisive
+    # outcomes. 14 random plies usually leaves one side a piece up or down,
+    # which dramatically raises the share of decisive games.
+    random_opening_plies: int = 14
     # Optional path to a file with one FEN per line; if set, each game starts
     # from a random FEN drawn from it (applied before random_opening_plies).
     opening_book_path: str = ""
@@ -194,9 +214,18 @@ class ChessAIConfig:
     # there is no decisive supervision to learn from — down-weighting draws
     # there throws away the only data we have. Ramping in delays the
     # rebalancing until decisive games actually populate the buffer.
-    draw_priority_mult: float = 0.5
+    draw_priority_mult: float = 0.3        # was 0.5 — more aggressive
+                                            # down-weighting once the ramp
+                                            # is in. Combined with the
+                                            # shorter ramp below this
+                                            # actively starves the value
+                                            # head of draw-dominated noise.
     draw_priority_start_mult: float = 1.0
-    draw_priority_ramp_steps: int = 50_000
+    draw_priority_ramp_steps: int = 25_000  # was 50_000 — at step 16k+ the
+                                            # ramp was barely halfway in.
+                                            # 25k pulls full effect by ~30k
+                                            # steps so the bootstrap actually
+                                            # benefits from the down-weight.
 
     # ── Opponent pool ────────────────────────────────────────────────────
     opponent_pool_size: int = 5
@@ -220,16 +249,34 @@ class ChessAIConfig:
 
     # ── DataLoader ───────────────────────────────────────────────────────
     dataloader_workers: int = 5  # hw-derived
-    prefetch_factor: int = 2
+    # prefetch_factor=4 instead of PyTorch's default 2: GPU is the bottleneck
+    # here, so having a few extra batches ready to go avoids the data path
+    # ever blocking the optimizer. 4 is a reasonable default; values >8 mostly
+    # eat RAM without buying additional pipeline depth.
+    prefetch_factor: int = 4
+    # persistent_workers keeps the DataLoader workers alive between epochs
+    # (~10-30 ms spawn cost saved per epoch boundary on Windows). The
+    # trainer currently samples directly from the replay buffer, so this
+    # field is consumed only when a real DataLoader path is wired up.
+    persistent_workers: bool = True
 
     # ── Checkpointing / logging ──────────────────────────────────────────
-    # 5000 steps was hours of unsaved compute on a single GPU (a crash =
-    # total loss). 1000 keeps the worst case to well under an hour.
-    checkpoint_every: int = 1_000
+    # 1000 → 200: with native C++ crashes (chess_ext extension has known
+    # memory bugs that trigger on specific mate-in-2 positions), losing
+    # even ~4h of compute per crash is painful. 200 steps ≈ 1h of wall
+    # time at ~60 train_steps/h, bounding crash-loss to roughly the
+    # batch-generation interval. Disk-cost is trivial (one .pt per file).
+    checkpoint_every: int = 200
     # Buffer snapshots (replay + teacher → pickle.gz next to checkpoint) every
-    # N checkpoints. Default 5 → every 5,000 steps. Bounded disk usage (a
-    # single sliding snapshot pair, not a per-step copy). Set 0 to disable.
+    # N checkpoints. With checkpoint_every=200 and buffer_save_every=5 a
+    # buffer dump lands every 1000 steps (same ~hourly cadence as before).
+    # Bounded disk usage (single sliding snapshot pair). Set 0 to disable.
     buffer_save_every: int = 5
+    # Lightweight emergency snapshot every N self-play batches (separate
+    # from `checkpoint_every`). Overwrites `latest.pt` so disk stays bounded;
+    # the supervisor wrapper reads this when auto-restarting after a crash
+    # so the work-loss is bounded to N batches (≈ a few minutes).
+    emergency_checkpoint_every_batches: int = 3
     checkpoint_dir: str = "checkpoints"
     tensorboard_dir: str = "runs"
     log_every: int = 100           # Training steps between console logs

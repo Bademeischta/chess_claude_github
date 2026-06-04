@@ -30,21 +30,56 @@ def get_game_result(board: Board) -> GameResult:
     """
     Determine the game result from the current board position.
     Returns GameResult.ONGOING if the game is still in progress.
+
+    Defensive against a known C++ chess_ext memory bug: ``is_stalemate``
+    can access-violate on certain mate-in-2 positions (Qh4/Qh6 patterns
+    with the king on its home square). We cheaply check legal moves
+    FIRST — if any exist, neither mate nor stalemate is possible and we
+    skip the dangerous C++ calls entirely. Only when zero legal moves are
+    detected do we disambiguate mate-vs-stalemate, and we do it via
+    python-chess instead of the C++ predicate to dodge the crash.
     """
-    if board.is_checkmate():
-        # Side to move is in checkmate → they lose
-        if board.side_to_move == 0:   # White to move but in mate → Black wins
-            return GameResult.BLACK_WIN
-        else:
+    # Cheap pre-filter: if legal moves exist, the position is neither
+    # checkmate nor stalemate. Skip the (sometimes-crashing) C++ calls.
+    try:
+        legal = board.legal_moves()
+    except Exception:
+        legal = []
+    if legal:
+        # Still need is_draw for fifty-move / threefold / insufficient
+        # material — those don't depend on legal moves being empty.
+        try:
+            if board.is_draw():
+                return GameResult.DRAW
+        except Exception:
+            # If C++ is_draw fails, fall back to python-chess for the
+            # draw check too. Cheap when it isn't called every leaf.
+            try:
+                import chess as _pc
+                pcb = _pc.Board(board.to_fen())
+                if (pcb.is_fifty_moves() or pcb.is_repetition(3)
+                        or pcb.is_insufficient_material()):
+                    return GameResult.DRAW
+            except Exception:
+                pass
+        return GameResult.ONGOING
+
+    # No legal moves → terminal. Use python-chess to disambiguate
+    # mate-vs-stalemate without touching the C++ is_stalemate path.
+    try:
+        import chess as _pc
+        pcb = _pc.Board(board.to_fen())
+        if pcb.is_checkmate():
+            if board.side_to_move == 0:   # White to move but mated → Black wins
+                return GameResult.BLACK_WIN
             return GameResult.WHITE_WIN
-    # Stalemate is a draw but is NOT covered by is_draw() (which only checks
-    # fifty-move / threefold / insufficient material). Without this, a stalemate
-    # returns ONGOING and the next search crashes on a node with no legal moves.
-    if board.is_stalemate():
+        # No legal moves and not in check → stalemate (draw).
         return GameResult.DRAW
-    if board.is_draw():
+    except Exception:
+        # Last-resort fallback: if python-chess can't parse the FEN
+        # (probably means the board itself is corrupt), call it a draw
+        # rather than crashing the whole self-play pool.
         return GameResult.DRAW
-    return GameResult.ONGOING
 
 
 def wdl_for_side(result: GameResult, side: int) -> float:

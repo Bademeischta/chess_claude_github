@@ -277,6 +277,13 @@ class ChessNet(nn.Module):
 
 def build_model(cfg, compile_model: bool = True) -> ChessNet:
     """Build a ChessNet from config and optionally compile it."""
+    # Gradient-checkpointing threshold: None = auto (off for ≤14 blocks,
+    # since activations fit comfortably in 12 GB VRAM and recompute would
+    # just waste 20-30% backward time). An explicit int overrides.
+    gc_from = getattr(cfg, "grad_ckpt_from", None)
+    if gc_from is None:
+        gc_from = 4 if cfg.num_res_blocks > 14 else cfg.num_res_blocks
+
     net = ChessNet(
         input_planes  = cfg.input_planes,
         gru_context   = cfg.gru_context_planes,
@@ -287,6 +294,7 @@ def build_model(cfg, compile_model: bool = True) -> ChessNet:
         gru_layers    = cfg.gru_layers,
         history_len   = cfg.gru_history_len,
         num_actions   = cfg.num_actions,
+        grad_ckpt_from = gc_from,
         policy_mid_channels = getattr(cfg, "policy_mid_channels", 32),
         material_scale      = getattr(cfg, "material_scale", 12.0),
     )
@@ -303,6 +311,12 @@ def build_model(cfg, compile_model: bool = True) -> ChessNet:
     # RNN fast path for bf16 weights (flatten_parameters() no-ops and it
     # recompacts on every forward). It casts internally and back.
     net.gru_encoder.float()
+
+    # NOTE: a channels_last memory-format pass was tried and reverted —
+    # on 8×8 spatial dims the NHWC kernels don't actually win, and the
+    # implicit layout transitions through the Policy/Value head's flatten()
+    # cost much more than they save (measured ~400× throughput regression
+    # on RTX 5070). Stay with default NCHW.
 
     if compile_model and cfg.torch_compile:
         # torch.compile's inductor backend requires Triton for GPU codegen,
