@@ -30,21 +30,56 @@ def get_game_result(board: Board) -> GameResult:
     """
     Determine the game result from the current board position.
     Returns GameResult.ONGOING if the game is still in progress.
+
+    Defensive against a known C++ chess_ext memory bug: ``is_stalemate``
+    can access-violate on certain mate-in-2 positions (Qh4/Qh6 patterns
+    with the king on its home square). We cheaply check legal moves
+    FIRST — if any exist, neither mate nor stalemate is possible and we
+    skip the dangerous C++ calls entirely. Only when zero legal moves are
+    detected do we disambiguate mate-vs-stalemate, and we do it via
+    python-chess instead of the C++ predicate to dodge the crash.
     """
-    if board.is_checkmate():
-        # Side to move is in checkmate → they lose
-        if board.side_to_move == 0:   # White to move but in mate → Black wins
-            return GameResult.BLACK_WIN
-        else:
+    # Cheap pre-filter: if legal moves exist, the position is neither
+    # checkmate nor stalemate. Skip the (sometimes-crashing) C++ calls.
+    try:
+        legal = board.legal_moves()
+    except Exception:
+        legal = []
+    if legal:
+        # Still need is_draw for fifty-move / threefold / insufficient
+        # material — those don't depend on legal moves being empty.
+        try:
+            if board.is_draw():
+                return GameResult.DRAW
+        except Exception:
+            # If C++ is_draw fails, fall back to python-chess for the
+            # draw check too. Cheap when it isn't called every leaf.
+            try:
+                import chess as _pc
+                pcb = _pc.Board(board.to_fen())
+                if (pcb.is_fifty_moves() or pcb.is_repetition(3)
+                        or pcb.is_insufficient_material()):
+                    return GameResult.DRAW
+            except Exception:
+                pass
+        return GameResult.ONGOING
+
+    # No legal moves → terminal. Use python-chess to disambiguate
+    # mate-vs-stalemate without touching the C++ is_stalemate path.
+    try:
+        import chess as _pc
+        pcb = _pc.Board(board.to_fen())
+        if pcb.is_checkmate():
+            if board.side_to_move == 0:   # White to move but mated → Black wins
+                return GameResult.BLACK_WIN
             return GameResult.WHITE_WIN
-    # Stalemate is a draw but is NOT covered by is_draw() (which only checks
-    # fifty-move / threefold / insufficient material). Without this, a stalemate
-    # returns ONGOING and the next search crashes on a node with no legal moves.
-    if board.is_stalemate():
+        # No legal moves and not in check → stalemate (draw).
         return GameResult.DRAW
-    if board.is_draw():
+    except Exception:
+        # Last-resort fallback: if python-chess can't parse the FEN
+        # (probably means the board itself is corrupt), call it a draw
+        # rather than crashing the whole self-play pool.
         return GameResult.DRAW
-    return GameResult.ONGOING
 
 
 def wdl_for_side(result: GameResult, side: int) -> float:
@@ -79,6 +114,7 @@ def get_piece_count(board: Board) -> int:
 _tb_reader = None          # python-chess Tablebase reader, lazily initialised
 _tb_path: str = ""
 _tb_available = False
+_tb_warned_keys: set = set()  # noisy-warning suppressor (see probe_tablebase)
 
 
 def init_tablebase(syzygy_path: str) -> bool:
@@ -130,9 +166,28 @@ def probe_tablebase(board: Board) -> Optional[float]:
 
     try:
         import chess as _pychess
+        import chess.syzygy as _pcsyzygy
         # Build a python-chess board from FEN for the probe only
         pc_board = _pychess.Board(board.to_fen())
-        wdl = _tb_reader.probe_wdl(pc_board)
+
+        # Probe strategy: prefer the direct table lookup. python-chess's
+        # higher-level `probe_wdl` does an alpha-beta search to handle
+        # en-passant correctly, but on a 3-4-5 piece set it sometimes
+        # recurses into positions whose material key the loader didn't
+        # register (e.g. asks for "KQv" without the trailing K) and raises
+        # MissingTableError. The direct table call is bug-free and is the
+        # correct value for the vast majority of positions where en-passant
+        # is irrelevant. Fall back to probe_wdl only when the direct path
+        # explicitly says "not in cache" (and stay quiet about minor probe
+        # failures — they're not actionable and would otherwise flood the
+        # log thousands of times per minute during pretraining).
+        try:
+            wdl = _tb_reader.probe_wdl_table(pc_board)
+        except _pcsyzygy.MissingTableError:
+            try:
+                wdl = _tb_reader.probe_wdl(pc_board)
+            except _pcsyzygy.MissingTableError:
+                return None
         # python-chess WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
         if wdl >= 2:    return 1.0
         elif wdl >= 1:  return 0.75  # Cursed win (theoretical win but draw by rule)
@@ -140,8 +195,15 @@ def probe_tablebase(board: Board) -> Optional[float]:
         elif wdl >= -1: return 0.25  # Blessed loss
         else:           return 0.0
     except Exception as e:
-        print(f"[rules] Tablebase probe failed ({type(e).__name__}: {e})",
-              file=sys.stderr)
+        # Log each *new* failure type once so a totally broken tablebase
+        # still surfaces, but don't flood stderr with the same message
+        # millions of times during pretraining.
+        key = f"{type(e).__name__}:{str(e)[:60]}"
+        if key not in _tb_warned_keys:
+            _tb_warned_keys.add(key)
+            print(f"[rules] Tablebase probe failed once "
+                  f"({type(e).__name__}: {e}) — silencing further "
+                  f"identical failures.", file=sys.stderr)
         return None
 
 

@@ -89,10 +89,23 @@ class SumTree:
 # ── Position record ────────────────────────────────────────────────────────
 
 class PositionRecord:
+    """In-memory replay record.
+
+    Storage optimisations vs. the dense PyTorch tensors used at training time:
+      * Board / history kept as float16 (set externally by the producer in
+        ``ParallelMCTS.game_stream``) — 2 bytes/cell instead of 4.
+      * Policy target stored sparse: an int16 array of nonzero action indices
+        and a float32 array of values. The MCTS target has ≤ ~50 nonzeros
+        out of 4672, so this compresses ~47×. The ``policy_target`` property
+        reconstructs the dense (num_actions,) array on read for the dataset.
+    """
+
     __slots__ = (
         "board_tensor",
         "history_tensor",
-        "policy_target",
+        "_pol_idx",       # int16 (k,) nonzero indices
+        "_pol_val",       # float32 (k,) values
+        "_pol_size",      # int — num_actions (typically 4672)
         "wdl_label",
         "mcts_q",
         "phase",
@@ -115,13 +128,46 @@ class PositionRecord:
     ) -> None:
         self.board_tensor   = board_tensor
         self.history_tensor = history_tensor
-        self.policy_target  = policy_target
+        # Sparse-encode policy target. The index domain (≤ num_actions = 4672)
+        # fits in int16 unsigned interpretation but we still want negative-safe
+        # casting → int32 only adds ~150 B/pos; int16 is fine since 4672 < 32768.
+        nz = np.flatnonzero(policy_target)
+        pol_size = int(policy_target.shape[0])
+        # Sanity: indices must be in-range AND fit in int16 (we use int16 to
+        # halve memory). 4672 < 32768 so this is a guaranteed property of the
+        # AlphaZero action encoding — but assert anyway because a silent
+        # truncation here corrupts every record going forward.
+        if nz.size and (nz.max() >= pol_size or nz.max() >= 32768):
+            raise ValueError(
+                f"PositionRecord: policy_target index out of range "
+                f"(max idx={int(nz.max())}, size={pol_size})"
+            )
+        self._pol_idx  = nz.astype(np.int16, copy=False)
+        self._pol_val  = policy_target[nz].astype(np.float32, copy=False)
+        self._pol_size = pol_size
         self.wdl_label      = wdl_label
         self.mcts_q         = mcts_q
         self.phase          = phase
         self.piece_count    = piece_count
         self.move_number    = move_number
         self.is_teacher     = is_teacher
+
+    @property
+    def policy_target(self) -> np.ndarray:
+        """Reconstruct dense (num_actions,) float32 policy target on demand."""
+        out = np.zeros(self._pol_size, dtype=np.float32)
+        if self._pol_idx.size:
+            idx32 = self._pol_idx.astype(np.int32, copy=False)
+            # Defensive: catch any corruption that slipped past __init__
+            # (e.g. accidental in-place mutation of _pol_idx).
+            if idx32.max() >= self._pol_size or idx32.min() < 0:
+                raise IndexError(
+                    f"PositionRecord.policy_target: idx out of bounds "
+                    f"(min={int(idx32.min())}, max={int(idx32.max())}, "
+                    f"size={self._pol_size})"
+                )
+            out[idx32] = self._pol_val
+        return out
 
 
 # ── PER buffer ────────────────────────────────────────────────────────────
@@ -139,12 +185,23 @@ class PrioritizedReplayBuffer:
         beta_start: float = 0.4,
         beta_end: float = 1.0,
         total_steps: int = 500_000,
+        draw_priority_mult: float = 1.0,
+        draw_priority_start_mult: float = 1.0,
+        draw_priority_ramp_steps: int = 50_000,
     ) -> None:
         self.capacity    = capacity
         self.alpha       = alpha
         self.beta_start  = beta_start
         self.beta_end    = beta_end
         self.total_steps = total_steps
+        # Final (steady-state) draw-down multiplier. The effective value used
+        # for sampling ramps from `draw_priority_start_mult` to this over the
+        # first `draw_priority_ramp_steps` training steps — see
+        # `_current_draw_mult`. Set start == end (both 0.5) to disable the
+        # ramp and get the legacy behaviour.
+        self.draw_priority_mult       = float(draw_priority_mult)
+        self.draw_priority_start_mult = float(draw_priority_start_mult)
+        self.draw_priority_ramp_steps = int(max(1, draw_priority_ramp_steps))
 
         self._data: list[Optional[PositionRecord]] = [None] * capacity
         self.tree  = SumTree(capacity)
@@ -158,6 +215,15 @@ class PrioritizedReplayBuffer:
 
     def is_ready(self, min_size: int) -> bool:
         return self._size >= min_size
+
+    def _current_draw_mult(self) -> float:
+        """Linearly interpolate draw multiplier from start → end over ramp."""
+        if self.draw_priority_ramp_steps <= 0:
+            return self.draw_priority_mult
+        frac = min(1.0, self._step / self.draw_priority_ramp_steps)
+        return (self.draw_priority_start_mult
+                + frac * (self.draw_priority_mult
+                          - self.draw_priority_start_mult))
 
     def add(self, record: PositionRecord, td_error: Optional[float] = None) -> None:
         """Add a single position. If no td_error given, uses max priority."""

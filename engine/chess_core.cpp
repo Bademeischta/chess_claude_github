@@ -24,14 +24,27 @@
 #include "chess_core.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstring>
+#include <iostream>
 #include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 
 namespace chess {
+
+// Atomic counter for stale-move events in apply_move. Exposed via the
+// pybind11 binding (`chess_ext.stale_move_count()`) so tests and the
+// training pipeline can detect MCTS tree-lifecycle bugs that would
+// otherwise stay silent. A non-zero value at the end of a run indicates
+// the workaround in apply_move was hit — i.e. some Move was applied to a
+// Board that no longer holds the source piece (stale child pointer,
+// reused tree across positions, etc.).
+static std::atomic<uint64_t> g_stale_move_count{0};
+uint64_t stale_move_count() { return g_stale_move_count.load(); }
+void reset_stale_move_count() { g_stale_move_count.store(0); }
 
 // ============================================================
 //  Constants & types
@@ -802,6 +815,34 @@ Board Board::apply_move(Move m) const {
         if (next.pieces[p] & sq_bit(from)) { moving = p; break; }
     }
 
+    // CRITICAL SAFETY: if the "from" square holds no piece of `us`, the move
+    // is malformed (stale/illegal — should never happen from legal_moves()
+    // output, but a corrupted children map or a stale Move from elsewhere in
+    // MCTS can hit this path). Earlier code dereferenced `next.pieces[-1]`,
+    // which is UB and corrupts adjacent struct fields — that's the silent
+    // memory corruption that surfaced as access violations in is_stalemate
+    // calls many simulations later. Return the board unchanged so the
+    // simulation continues without poisoning subsequent state.
+    //
+    // Logging policy: increment a global atomic counter (exposed to Python)
+    // so tests / the trainer can catch this regression; emit a one-time
+    // stderr warning so a developer running interactively sees it without
+    // flooding the log on every later hit.
+    if (moving < 0) {
+        uint64_t prior = g_stale_move_count.fetch_add(1, std::memory_order_relaxed);
+        if (prior == 0) {
+            std::cerr << "[chess_core] WARN: apply_move received stale/illegal "
+                         "move (from=" << from << ", to=" << to
+                      << ", flags=" << flags << ", side=" << us
+                      << "). Continuing with unchanged board. "
+                         "Further occurrences silently counted in "
+                         "chess_ext.stale_move_count()."
+                      << std::endl;
+        }
+        assert(false && "apply_move called with stale/illegal move");
+        return next;  // identity-ish: same hash_history was already copied
+    }
+
     // Capture: remove victim. Covers normal captures AND promotion-captures
     // (flags 12-15); en passant is handled separately below. The promotion
     // branch later only PLACES the promoted piece, so the victim on `to`
@@ -897,10 +938,12 @@ Board Board::apply_move(Move m) const {
     next.hash ^= ZOB_BLACK_TO_MOVE;
 
     // A repetition can never span an irreversible move (capture / pawn move /
-    // promotion), so the repetition window is bounded by the halfmove clock.
-    // Clearing here keeps is_threefold correct AND bounds hash_history to
-    // ≤ halfmove_clock entries, so the per-node `Board next = *this` copy no
-    // longer scales with full game length (big perft / MCTS speedup).
+    // promotion), so we drop the entire history on those moves. This keeps
+    // is_threefold correct AND keeps hash_history short across an
+    // irreversible move, so the per-node `Board next = *this` copy stays
+    // cheap regardless of total game length (big perft / MCTS speedup).
+    // Note: this is a CLEAR + push, not a sliding-window bound — between
+    // irreversible moves the history grows monotonically.
     if (irreversible)
         next.hash_history.clear();
     next.hash_history.push_back(next.hash);

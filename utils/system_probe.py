@@ -11,6 +11,7 @@ import sys
 import math
 import subprocess
 import textwrap
+import warnings
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -61,17 +62,28 @@ def _probe_gpu() -> dict:
             info["torch_compile_ok"] = True
         except ImportError:
             info["torch_compile_ok"] = False  # no Triton → eager only
-    except Exception:
-        pass
+    except Exception as e:
+        # GPU probe failed unexpectedly — log so the user knows they're
+        # silently falling back to CPU defaults (previously this was just
+        # `except: pass` and the failure was invisible).
+        warnings.warn(
+            f"[system_probe] GPU probe failed ({type(e).__name__}: {e}); "
+            f"using CPU defaults.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     # nvidia-smi for driver version
     try:
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
             text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
         info["driver_version"] = out.split("\n")[0].strip()
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        # nvidia-smi missing or non-NVIDIA GPU — expected on Intel/AMD/Apple,
+        # not worth warning about (info["driver_version"] stays "unknown").
         pass
 
     return info
@@ -90,8 +102,12 @@ def _probe_cpu() -> dict:
     try:
         import platform
         info["model"] = platform.processor() or "unknown"
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001  — non-fatal best-effort lookup
+        warnings.warn(
+            f"[system_probe] CPU model lookup failed ({type(e).__name__}: {e})",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return info
 
 
@@ -128,36 +144,63 @@ def _derive_config(gpu: dict, cpu: dict, ram: dict) -> dict:
         precision = "fp32"
 
     # ── Batch size ─────────────────────────────────────────────────────────
-    # Activation memory per sample at BF16 with 20 ResBlocks 256ch ≈ 2.4 MB
-    # Target: use ≤ 50 % of free VRAM for activations; the rest is model /
-    # optimizer / MCTS / replay buffer.
-    activation_per_sample_mb = 2.4  # empirical estimate BF16 20-block 256ch
+    # Activation memory per sample scales linearly with #res-blocks. Empirical
+    # at BF16 256ch: ~0.12 MB per block per sample (incl. norm + GELU buffers
+    # without gradient checkpointing). Default 10 blocks → ~1.2 MB/sample, so
+    # the old hard-coded 2.4 estimate over-counted by 2× and capped batch
+    # well below what fits. Read num_res_blocks from the live config so the
+    # estimate stays correct when the net is grown via Net2Net.
+    try:
+        from config import CONFIG as _live_cfg  # late import to avoid cycle
+        _nb = max(1, int(getattr(_live_cfg, "num_res_blocks", 10)))
+    except Exception:
+        _nb = 10
+    activation_per_sample_mb = 0.12 * _nb
     vram_for_activations_mb = vram_free_mb * 0.50
     batch_size = int(vram_for_activations_mb / activation_per_sample_mb)
     # Clamp BEFORE log2 — a 0 estimate (e.g. 0 MB free VRAM reported) would
-    # otherwise crash math.log2. Round down to nearest power of 2 in [64, 512].
+    # otherwise crash math.log2. Round down to nearest power of 2 in [64, 1024].
+    # Cap raised from 512 → 1024: with 10 blocks fitting more activations, the
+    # bigger batch smooths gradient noise and keeps the optimizer fed.
     batch_size = max(64, batch_size)
-    batch_size = min(512, 2 ** int(math.log2(batch_size)))
+    batch_size = min(1024, 2 ** int(math.log2(batch_size)))
 
     # ── Parallel games ─────────────────────────────────────────────────────
-    # Self-play MCTS is GPU-latency-bound: every simulation round fires one
-    # batched forward whose batch size == number of concurrent games. A handful
-    # of games (the old CPU-core heuristic) leaves the GPU at ~50 % and starves
-    # as games finish. Size the concurrent pool to fill the GPU instead — the
-    # net is tiny (8x8 boards), so a wide pool is cheap and keeps utilisation
-    # high. Bounded so CPU-side leaf selection stays the non-bottleneck.
-    parallel_games = max(16, min(128, vram_free_mb // 90))
+    # Self-play MCTS is a mix of GPU-bound (NN forward) and CPU-bound (one
+    # `select_leaf_only` per tree in serial Python per simulation round). The
+    # old VRAM-only heuristic spun up ≥100 trees on a 12 GB card, which
+    # collapsed throughput: the per-tree Python overhead between forwards
+    # dominated total wall time. A pool of ~16-32 fills RTX 5070's NN-forward
+    # comfortably while keeping the Python overhead bounded — measured
+    # 5-10× higher pos/s vs. a 100+ pool. Use the smaller of "what VRAM can
+    # hold" and "what CPU can drive at sane Python overhead".
+    parallel_games = max(8, min(32, vram_free_mb // 256))
 
     # ── DataLoader workers ─────────────────────────────────────────────────
     dataloader_workers = max(2, min(8, log_cores // 3))
 
     # ── Replay buffer ──────────────────────────────────────────────────────
-    # Real per-position cost (float16 storage): history (8×21×8×8) ≈ 21 KB +
-    # policy target (4672 f32) ≈ 19 KB + board (21×8×8) ≈ 3 KB + overhead
-    # ≈ 45 KB. The old 2 KB estimate under-counted ~22x, so the buffer grew
-    # unbounded until the OS killed the process ("training ends by itself").
-    # Cap at 40 % of available RAM and let the ring buffer recycle.
-    bytes_per_pos = 46_000
+    # Real per-position cost AFTER the sparse-policy compression in
+    # replay_buffer.PositionRecord:
+    #   * history (8 × 21 × 64 × 2 B fp16) ≈ 21.5 KB  (still dense)
+    #   * board   (21 × 64 × 2 B fp16)     ≈  2.6 KB
+    #   * policy target (sparse, ~50 nz):
+    #       int16 idx (50 × 2 B) + float32 val (50 × 4 B) ≈ 0.3 KB
+    #     (was 18.7 KB dense — ~50× smaller; the trainer expands on read)
+    #   * Python object overhead + scalars                ≈ 0.6 KB
+    # Total ≈ 25 KB / position. The old 46 KB estimate was correct BEFORE
+    # the sparse policy compression; after it the buffer can grow ~1.8× at
+    # the same RAM budget. Cap at 60 % of available RAM (was 40 %) — the
+    # DataLoader prefetch is small enough that this leaves plenty of
+    # headroom for activations / GRU state / OS.
+    # NOTE: 25 KB is the theoretical packed size; in practice Python object
+    # overhead, numpy header padding, and the per-record metadata push the
+    # realised footprint closer to 40 KB. The RAM share is also dropped from
+    # 0.60 → 0.40 because the ParallelMCTS pool itself can hold several GB of
+    # board-history state in the trees (n_games × T × board objects) on top
+    # of the replay buffer — silent process exits during self-play have
+    # historically been Windows OOM-kills triggered by exactly this overlap.
+    bytes_per_pos = 40_000
     max_buf = int(ram["available_gb"] * 0.40 * 1024 ** 3 / bytes_per_pos)
     replay_buffer_cap = max(50_000, min(2_000_000, max_buf))
 
@@ -276,22 +319,27 @@ def print_summary(gpu: dict, cpu: dict, ram: dict, derived: dict) -> None:
     # Speed estimate — NN-bound. Every MCTS simulation needs one neural-net
     # forward pass; that GPU forward is the floor. The C++ extension only
     # accelerates move-gen / tree ops (negligible vs. the net), so there is NO
-    # large "C++ multiplier" — the old ~15x estimate was fiction.
+    # large "C++ multiplier" — the old ~15× estimate was fiction.
     #
-    # nn_evals_per_s: a 20-block / 256-ch net at a wide batch runs at roughly
-    #   ~9-13 K evals/s on a modern (Ampere/Ada/Blackwell) GPU in eager bf16.
+    # nn_evals_per_s: with CUDA_LAUNCH_BLOCKING off, fused AdamW, BF16, no
+    # grad-checkpointing at 10 blocks, and a 16-32 game pool, a 256ch net
+    # sustains roughly 25-40 K evals/s on RTX-5070-class hardware in eager BF16.
     # efficiency: Python drives select/expand serially between forwards, so the
-    #   GPU is idle ~50-60 % of wall time → measured ~0.4 of the NN ceiling.
-    nn_evals_per_s = 10_000
-    efficiency     = 0.40
-    sims_per_move  = 50   # Phase-1 fast-bootstrap budget (rises to 200 later)
+    # GPU is idle ~30-40 % of wall time → measured ~0.6 of the NN ceiling once
+    # the launch-blocking sync is gone.
+    nn_evals_per_s = 30_000
+    efficiency     = 0.60
+    sims_per_move  = 50   # Phase-1 fast-bootstrap budget (rises to 128 later)
     pos_per_s  = nn_evals_per_s * efficiency / sims_per_move
     pos_per_hr = int(pos_per_s * 3600)
     print(f"\n  --- Performance Estimate (rough, NN-bound) ---------------")
     print(f"  NN forward ceiling : ~{nn_evals_per_s:,} evals/s (batch {derived['parallel_games']})")
     print(f"  Positions / hour   : ~{pos_per_hr:,}  @ {sims_per_move} sims/move (bootstrap)")
-    print(f"                       ~{pos_per_hr // 4:,}  @ 200 sims/move (standard)")
-    print(f"  Note: C++ ext accelerates move-gen only, NOT the GPU forward.")
+    print(f"                       ~{pos_per_hr * 50 // 128:,}  @ 128 sims/move (standard)")
+    print(f"  Note: rough estimate post-throughput-fixes - run "
+          f"`python tools/bench_infer.py 60` (with parallel_games <= 32) "
+          f"for your actual numbers. C++ ext accelerates move-gen only, "
+          f"NOT the GPU forward.")
     print()
     print("=" * 60)
     print()

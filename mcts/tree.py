@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import traceback
 import numpy as np
 import torch
 from typing import List, Dict, Optional, Tuple
@@ -53,7 +54,11 @@ def fill_history(out: np.ndarray, board_history: list, T: int) -> np.ndarray:
 
 # ── Backend selection ─────────────────────────────────────────────────────
 
+_DISABLE_CPP = os.environ.get("CHESS_AI_NO_CPP", "").lower() in ("1", "true", "yes")
+
 try:
+    if _DISABLE_CPP:
+        raise ImportError("CHESS_AI_NO_CPP=1 — forcing python MCTS path")
     import chess_ext as _cx
     _USE_CPP = True
 except ImportError:
@@ -130,8 +135,12 @@ class MCTSTree:
             else TorchInferenceEngine(model)
 
         self.c_puct      = cfg.mcts_c_puct
-        self.dirichlet_a = cfg.dirichlet_alpha
-        self.dirichlet_e = cfg.dirichlet_eps
+        # Clamp dirichlet_alpha defensively: np.random.dirichlet crashes on
+        # alpha <= 0, and the ERED controller in trainer.py can push the eps
+        # towards zero — which would degenerate the distribution. Alpha is
+        # a static cfg value here, but we guard it anyway.
+        self.dirichlet_a = max(float(cfg.dirichlet_alpha), 0.01)
+        self.dirichlet_e = max(float(cfg.dirichlet_eps), 0.0)
 
         # History buffer: keeps the last `history_len` board tensors
         self._board_history: list = []  # list of (21,8,8) np.ndarray
@@ -189,7 +198,15 @@ class MCTSTree:
             self._board_history = self._board_history[-self.cfg.gru_history_len:]
 
         if _USE_CPP:
-            self._root_node = self._cpp_tree.advance_root(played_move)
+            # If select_move had to use the empty-children fallback, the C++
+            # subtree is in an inconsistent state. Wipe it via new_root()
+            # instead of advance_root() so the next selection cycle starts
+            # from a fresh, well-formed node.
+            if getattr(self, "_needs_cpp_reset", False):
+                self._root_node = self._cpp_tree.new_root(0, 1.0)
+                self._needs_cpp_reset = False
+            else:
+                self._root_node = self._cpp_tree.advance_root(played_move)
         else:
             child = self._root_node.children.get(played_move)
             if child is None:
@@ -254,6 +271,132 @@ class MCTSTree:
             pending["path"], pending["leaf_node"],
             pending["leaf_board"], value, policy_logits,
         )
+
+    # ── Batched single-tree simulations ──────────────────────────────────
+
+    @torch.inference_mode()
+    def run_batched_sims(self, total_sims: int,
+                         batch_size: int = 0) -> int:
+        """
+        Run up to ``total_sims`` MCTS simulations, sharing one NN forward
+        across ``batch_size`` distinct leaves per round.
+
+        How it can find DIFFERENT leaves inside the same tree without
+        re-evaluating the same node: ``select_leaf_only`` applies a virtual
+        loss along the selected path on each call, so the next selection
+        cycle's UCB scores penalise that path and route to a different leaf.
+        After the network evaluates the whole batch, ``apply_eval`` undoes
+        the virtual loss and applies the real backup.
+
+        This is the single-tree analogue of ``ParallelMCTS._batched_sims``.
+
+        Why this matters for the web UI: a CUDA-Graph inference engine is
+        captured at a fixed batch width (typically ``parallel_games``,
+        e.g. 32). Calling ``run_one_simulation`` once at a time still pays
+        the full graph cost — the engine pads the other 31 slots with
+        zeros and computes them anyway. Batching the leaves brings the
+        effective sims/s up by roughly that padding factor.
+
+        Returns the number of sims actually completed (some leaves may be
+        terminal / tablebase hits and are resolved inline without using a
+        GPU slot, but still count as "one sim of progress").
+        """
+        if total_sims <= 0:
+            return 0
+        if batch_size <= 0:
+            batch_size = int(getattr(self.engine, "batch_size", 0)) or 32
+        batch_size = max(1, int(batch_size))
+
+        dtype = self._net_dtype()
+        completed = 0
+
+        while completed < total_sims:
+            remaining = total_sims - completed
+            target = min(batch_size, remaining)
+
+            # Collect up to `target` distinct leaves. select_leaf_only applies
+            # virtual loss along each chosen path so subsequent calls in the
+            # same round explore different subtrees.
+            pendings: list = []
+            attempts = 0
+            # Allow a few extra attempts so terminal-leaf hits don't starve
+            # the batch — but cap to avoid an infinite loop if every path
+            # leads to a non-NN leaf (rare; means the search has converged
+            # on terminal lines and there's no more work to do).
+            attempts_budget = target * 2 + 4
+            while len(pendings) < target and attempts < attempts_budget:
+                attempts += 1
+                try:
+                    p = self.select_leaf_only()
+                except Exception:
+                    # Hard failure inside selection — count it and bail out
+                    # of this round; outer loop may keep trying.
+                    completed += 1
+                    break
+                if p is None:
+                    # Terminal / tablebase leaf — resolved inline, no NN needed.
+                    completed += 1
+                else:
+                    pendings.append(p)
+
+            if not pendings:
+                # Nothing left to evaluate — the search has saturated. Break
+                # early instead of spinning. Caller can still inspect the
+                # tree via root_analysis.
+                if completed >= total_sims or attempts >= attempts_budget:
+                    break
+                continue
+
+            # Build the batched NN input. All leaves in one tree share the
+            # same root-relative history; broadcast one history copy across
+            # the batch instead of stacking n identical arrays.
+            try:
+                boards_np = np.stack(
+                    [p["leaf_board"].to_tensor() for p in pendings])
+            except Exception:
+                # If ANY leaf's to_tensor fails, fall back to single sims
+                # to make progress on the others.
+                for p in pendings:
+                    try:
+                        value, policy_logits = self._nn_evaluate(p["leaf_board"])
+                        self.apply_eval(p, value, policy_logits)
+                    except Exception:
+                        pass
+                    completed += 1
+                continue
+
+            hist_one = self.history_np()        # (T, planes, 8, 8) — reused
+            hist_np  = np.broadcast_to(
+                hist_one, (len(pendings),) + hist_one.shape
+            ).copy()  # actual storage; CUDA-Graph engine .copy_()s into it
+
+            board_t = torch.from_numpy(boards_np).to(self.device, dtype)
+            hist_t  = torch.from_numpy(hist_np).to(self.device, dtype)
+
+            try:
+                policy_logits, values = self.engine.infer(board_t, hist_t)
+            except Exception as e:  # noqa: BLE001  — fallback per-leaf eval
+                # Engine failure (e.g. CUDA-Graph capture mismatch) — fall
+                # back to single-leaf inference so the search still makes
+                # progress, just slowly.
+                for p in pendings:
+                    try:
+                        v, pl = self._nn_evaluate(p["leaf_board"])
+                        self.apply_eval(p, v, pl)
+                    except Exception:
+                        pass
+                    completed += 1
+                continue
+
+            # Fuse cast+copy.
+            values_np  = values.to("cpu", torch.float32).numpy()
+            logits_np  = policy_logits.to("cpu", torch.float32).numpy()
+
+            for k, p in enumerate(pendings):
+                self.apply_eval(p, float(values_np[k]), logits_np[k])
+                completed += 1
+
+        return completed
 
     def _finish_leaf(self, path, leaf_node, leaf_board,
                      value: float, policy_logits: np.ndarray) -> None:
@@ -411,6 +554,50 @@ class MCTSTree:
         Select a move and return (move_int, policy_target_array).
         policy_target_array has shape (num_actions,) with visit fractions.
         """
+        # Defensive guard against a known native crash in chess_ext: the C++
+        # MCTSNode::sample_move() starts with `assert(!children.empty())`
+        # which is a no-op in release builds, then iterates over an empty
+        # `children` map and hits undefined behaviour (Windows access
+        # violation). The faulthandler catches it but the process still dies.
+        # Prevent the call from ever happening on an unexpanded / leafless
+        # root by checking the count first, and fall back to a uniform pick
+        # from the board's legal moves when the tree is degenerate.
+        if _USE_CPP:
+            try:
+                n_children = int(self._root_node.get_children_count())
+            except Exception:
+                n_children = 0
+            if n_children == 0:
+                # Root not expanded (this signals a search-path bug upstream).
+                # Don't crash the whole self-play pool — pick any legal move
+                # so the game can finish, and log loudly so the FEN is in the
+                # transcript for diagnosis.
+                try:
+                    fen = self._root_board.to_fen()
+                except Exception:
+                    fen = "<no-fen>"
+                print(f"[MCTSTree] WARN: root has 0 children, "
+                      f"falling back to first legal move. FEN={fen}",
+                      flush=True)
+                from engine.movegen import generate_legal_moves
+                legal = list(generate_legal_moves(self._root_board))
+                if not legal:
+                    # No legal moves — return a sentinel; caller will treat
+                    # this as game-over on the next get_game_result() check.
+                    return 0, np.zeros(self.cfg.num_actions, dtype=np.float32)
+                move = legal[0]
+                pt = np.zeros(self.cfg.num_actions, dtype=np.float32)
+                stm = self._root_board.side_to_move
+                idx = move_to_action_index(move, stm)
+                if idx >= 0:
+                    pt[idx] = 1.0
+                # CRITICAL: mark the C++ tree as "needs a clean root next
+                # advance" so we don't carry an inconsistent subtree forward.
+                # advance() reads this flag and calls new_root() instead of
+                # advance_root() when set, wiping any orphaned C++ state.
+                self._needs_cpp_reset = True
+                return move, pt
+
         # Same API on both backends (C++ chess_ext node and Python _PyNode).
         move  = self._root_node.sample_move(temperature)
         pairs = self._root_node.get_policy_target()
@@ -592,6 +779,13 @@ class ParallelMCTS:
         self.engine = build_inference_engine(cfg, model, device)
         self.trees  = [MCTSTree(cfg, model, device, engine=self.engine)
                        for _ in range(self.n)]
+        # Reusable fp32 scratch for fill_history; one allocation for the
+        # lifetime of the pool instead of one per recorded position.
+        # The fp16 copy at recording time is unavoidable (each record needs
+        # its own storage in the replay buffer).
+        self._hist_scratch = np.zeros(
+            (cfg.gru_history_len, cfg.input_planes, 8, 8), dtype=np.float32
+        )
 
     @torch.inference_mode()
     def _batch_begin_search(
@@ -617,35 +811,45 @@ class ParallelMCTS:
             if i in fresh:
                 self.trees[i].reset(boards[i], keep_history=False)
 
-        # Find trees whose root still needs network evaluation
-        needs_eval = [i for i in active
-                      if not self.trees[i]._root_node.is_expanded()
-                      and boards[i].legal_moves()]
+        # Find trees whose root still needs network evaluation. Compute
+        # legal_moves() ONCE here and pass it on — the C++ Board.legal_moves
+        # call allocates a fresh Python list every time, so calling it twice
+        # per tree per round is pure overhead.
+        needs_eval: list[int] = []
+        legal_cache: list = []  # parallel to needs_eval
+        for i in active:
+            if self.trees[i]._root_node.is_expanded():
+                continue
+            lm = boards[i].legal_moves()
+            if not lm:
+                continue
+            needs_eval.append(i)
+            legal_cache.append(lm)
 
         if needs_eval:
             dtype = self.trees[0]._net_dtype()
-            non_blocking = (self.device.type == "cuda")
 
             bt = np.stack([boards[i].to_tensor() for i in needs_eval])
             ht = np.stack([self.trees[i].history_np() for i in needs_eval])
 
-            board_t = (torch.from_numpy(bt).pin_memory()
-                       .to(self.device, dtype, non_blocking=non_blocking)
-                       if non_blocking
-                       else torch.from_numpy(bt).to(self.device, dtype))
-            hist_t = (torch.from_numpy(ht).pin_memory()
-                      .to(self.device, dtype, non_blocking=non_blocking)
-                      if non_blocking
-                      else torch.from_numpy(ht).to(self.device, dtype))
+            # Direct H2D transfer (no inline pin_memory — that would force a
+            # synchronous pageable→pinned copy on this thread, paying more
+            # than the resulting async transfer saves).
+            board_t = torch.from_numpy(bt).to(self.device, dtype)
+            hist_t  = torch.from_numpy(ht).to(self.device, dtype)
 
             policy_logits, values = self.engine.infer(board_t, hist_t)
-            values_np  = values.float().cpu().numpy()
-            logits_np  = policy_logits.float().cpu().numpy()
+            # Fuse the .float() cast with the D2H copy to skip one intermediate
+            # GPU tensor allocation. `.to('cpu', dtype, non_blocking=False)`
+            # synchronises just like .cpu() does because the consumer below
+            # needs the data immediately.
+            values_np = values.to("cpu", torch.float32).numpy()
+            logits_np = policy_logits.to("cpu", torch.float32).numpy()
 
             for k, i in enumerate(needs_eval):
                 tree  = self.trees[i]
                 board = boards[i]
-                legal = board.legal_moves()
+                legal = legal_cache[k]  # cached above; no second C++ call
                 priors = tree._compute_priors(
                     logits_np[k], legal, board.side_to_move
                 )
@@ -674,7 +878,6 @@ class ParallelMCTS:
         (values[B], policy_logits[B, num_actions]) as numpy arrays.
         """
         dtype = self.trees[0]._net_dtype()
-        non_blocking = (self.device.type == "cuda")
 
         # Stack once instead of B separate H2D copies. history_np() returns
         # each tree's reused scratch buffer; np.stack copies here, before any
@@ -682,16 +885,18 @@ class ParallelMCTS:
         bt = np.stack([p["leaf_board"].to_tensor() for _, p in pendings])
         ht = np.stack([self.trees[ti].history_np() for ti, _ in pendings])
 
-        board_t = torch.from_numpy(bt).pin_memory().to(
-            self.device, dtype, non_blocking=non_blocking
-        ) if non_blocking else torch.from_numpy(bt).to(self.device, dtype)
-        hist_t = torch.from_numpy(ht).pin_memory().to(
-            self.device, dtype, non_blocking=non_blocking
-        ) if non_blocking else torch.from_numpy(ht).to(self.device, dtype)
+        # Direct H2D — inline pin_memory() was a perf trap (synchronous
+        # pageable→pinned copy on the main thread; the supposed async win
+        # from non_blocking=True is gone if we paid for the pin first).
+        board_t = torch.from_numpy(bt).to(self.device, dtype)
+        hist_t  = torch.from_numpy(ht).to(self.device, dtype)
 
         policy_logits, value = self.engine.infer(board_t, hist_t)
-        return (value.float().cpu().numpy(),
-                policy_logits.float().cpu().numpy())
+        # Fuse the BF16→FP32 upcast with the D2H copy (one less GPU kernel
+        # allocation than `.float().cpu()`). The caller consumes both
+        # immediately, so the sync inside .to('cpu', ...) is unavoidable.
+        return (value.to("cpu", torch.float32).numpy(),
+                policy_logits.to("cpu", torch.float32).numpy())
 
     def _batched_sims(self, active: List[int], counts) -> None:
         """
@@ -798,6 +1003,11 @@ class ParallelMCTS:
         boards    = [self._fresh_board() for _ in range(self.n)]
         records   = [GameRecord() for _ in range(self.n)]
         move_nums = [0] * self.n
+        # Per-game resign counter: streaks[i][0/1] = consecutive moves where
+        # white/black saw root_value < -resign_q from their own perspective.
+        resign_q     = getattr(self.cfg, "resign_q", 0.0)
+        resign_limit = getattr(self.cfg, "resign_streak", 0)
+        streaks      = [[0, 0] for _ in range(self.n)]
         for rec in records:
             rec.is_teacher = is_teacher
 
@@ -805,6 +1015,7 @@ class ParallelMCTS:
         fresh  = set(active)  # every slot starts a brand-new game
 
         while True:
+          try:
             # 1) Expand roots with ONE batched GPU forward. `fresh` slots reset
             #    + re-seed history; the rest reuse their advanced subtree.
             self._batch_begin_search(active, boards, fresh=fresh)
@@ -831,15 +1042,32 @@ class ParallelMCTS:
                 rec = records[i]
                 rec.board_tensors.append(board.to_tensor().astype(np.float16))
                 rec.policy_targets.append(policy_target)
-                rec.mcts_qs.append(tree.root_value())
+                q_root = tree.root_value()
+                rec.mcts_qs.append(q_root)
                 rec.move_numbers.append(mn)
                 rec.phases.append(board.get_phase())
                 rec.piece_counts.append(board.piece_count())
 
-                hist_buf = np.zeros((T, self.cfg.input_planes, 8, 8),
-                                    dtype=np.float32)
-                fill_history(hist_buf, tree._board_history, T)
-                rec.history_tensors.append(hist_buf.astype(np.float16))
+                # Reuse the pool-wide scratch; fill_history overwrites it
+                # in place. Zero it first so stale frames from an older,
+                # longer game don't leak through when board_history is short.
+                self._hist_scratch.fill(0.0)
+                fill_history(self._hist_scratch, tree._board_history, T)
+                rec.history_tensors.append(
+                    self._hist_scratch.astype(np.float16)  # owned copy
+                )
+
+                # Resign tracking — track consecutive low-Q moves PER SIDE.
+                # `mn % 2` is the side to move BEFORE this move (0=white,1=black);
+                # root_value is from that side's perspective. Disable resign
+                # before move 20 — early-opening Q is too noisy when the net
+                # is weak, and false resigns bias the training distribution
+                # toward pessimism in book positions.
+                side = mn % 2
+                if resign_limit > 0 and mn >= 20 and q_root < -resign_q:
+                    streaks[i][side] += 1
+                else:
+                    streaks[i][side] = 0
 
                 new_board = board.apply_move(move)
                 tree.advance(move, new_board)
@@ -847,6 +1075,16 @@ class ParallelMCTS:
                 move_nums[i] += 1
 
                 result = get_game_result(new_board)
+                resign_loser = None
+                if resign_limit > 0:
+                    if streaks[i][0] >= resign_limit:
+                        resign_loser = 0  # white resigns
+                    elif streaks[i][1] >= resign_limit:
+                        resign_loser = 1  # black resigns
+                    if resign_loser is not None and result == GameResult.ONGOING:
+                        result = (GameResult.BLACK_WIN if resign_loser == 0
+                                  else GameResult.WHITE_WIN)
+
                 if (result != GameResult.ONGOING
                         or move_nums[i] >= self.cfg.max_game_moves):
                     self._finalize_record(rec, result)
@@ -857,8 +1095,24 @@ class ParallelMCTS:
                     records[i]   = GameRecord()
                     records[i].is_teacher = is_teacher
                     move_nums[i] = 0
+                    streaks[i]   = [0, 0]
                     fresh.add(i)
                     yield finished
 
             # `active` is constant (= the full pool); slots are recycled in
             # place rather than dropped, so the batch never shrinks.
+          except Exception as e:
+            # Surface ANY crash from inside the loop. Without this wrapper a
+            # native-extension fault or unexpected exception kills the
+            # generator silently, which from the consumer side looks like
+            # the whole process just exited.
+            print(f"[game_stream] FATAL: {type(e).__name__}: {e}", flush=True)
+            try:
+                cur_fens = [b.fen() if hasattr(b, "fen") else "<no-fen>"
+                            for b in boards]
+                print(f"[game_stream] boards at crash: {cur_fens}", flush=True)
+                print(f"[game_stream] move_nums: {move_nums}", flush=True)
+            except Exception:
+                pass
+            traceback.print_exc()
+            raise

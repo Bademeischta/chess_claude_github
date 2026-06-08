@@ -1,0 +1,67 @@
+[build-system]
+# pybind11>=2.10 is required for stable Python 3.11+ bindings; setuptools
+# is the actual build backend (the project uses setup_ext.py for the C++
+# extension, not the modern build backend).
+requires = ["setuptools>=64", "wheel", "pybind11>=2.10", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chess_ai"
+version = "0.1.0"
+description = "AlphaZero-style chess engine with hybrid Python/C++ MCTS and ResNet+GRU policy/value network."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Bademeischta" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Games/Entertainment :: Board Games",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Runtime dependency list mirrors requirements.txt. PyTorch is intentionally
+# NOT pinned here so users install the CUDA wheel matching their hardware
+# from the PyTorch index URL (see README).
+dependencies = [
+    "numpy>=2.0",
+    "psutil>=5.9",
+    "python-chess>=1.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.5",
+    "pybind11>=2.10",
+]
+
+# Explicit package list — setuptools' auto-discovery would otherwise see
+# `runs/`, `checkpoints/`, etc. as top-level packages and refuse to build
+# the C++ extension. We list the Python packages we actually ship.
+[tool.setuptools]
+packages = ["engine", "mcts", "model", "training", "utils", "tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --tb=short"
+# Markers used in long-running perft / arena tests so they can be excluded
+# on tight CI budgets via `-m "not slow"`.
+markers = [
+    "slow: tests that take more than a couple of seconds",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["build", "checkpoints", "runs", "__pycache__"]
+
+[tool.ruff.lint]
+# Match the rest of the codebase's pragmatic style — disable noisy rules
+# that aren't worth retrofitting onto an ML project.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line too long — codebase has many narrative comments
+    "E731",  # lambda assignments
+]

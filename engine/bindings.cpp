@@ -48,6 +48,13 @@ PYBIND11_MODULE(chess_ext, m) {
     m.def("init_tables", &init_tables,
           "Initialise magic bitboard and Zobrist tables (called automatically).");
 
+    // ── Diagnostics ───────────────────────────────────────
+    m.def("stale_move_count", &stale_move_count,
+          "Number of stale/illegal moves applied since the process started "
+          "(or since reset_stale_move_count). Healthy = 0.");
+    m.def("reset_stale_move_count", &reset_stale_move_count,
+          "Reset the stale-move counter to zero (use between tests).");
+
     // ── Constants ─────────────────────────────────────────
     m.attr("WHITE")  = WHITE;
     m.attr("BLACK")  = BLACK;

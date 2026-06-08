@@ -28,3 +28,8 @@ env/
 
 # Claude Code internal
 .claude/
+
+# Syzygy tablebases (~939 MB binary, regenerable via tools/download_syzygy.py)
+syzygy/
+*.rtbw
+*.rtbz

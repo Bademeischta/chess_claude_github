@@ -15,11 +15,22 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import os
 import sys
 import signal
 import time
 from pathlib import Path
+
+# Catch C-level segfaults (chess_ext, CUDA, cuDNN) — without this a native
+# crash exits the process silently with no traceback.
+faulthandler.enable()
+
+# NOTE: CUDA_LAUNCH_BLOCKING is intentionally NOT defaulted here. Setting it
+# serialises every CUDA kernel and costs 2-5x throughput. For pin-pointing
+# async CUDA errors during debug, set it explicitly:
+#   PowerShell:  $env:CUDA_LAUNCH_BLOCKING = "1"; python main.py ...
+# faulthandler already gives us tracebacks for hard crashes.
 
 # Force UTF-8 output on Windows so Unicode chars in print() don't crash
 if sys.platform == "win32":
@@ -61,6 +72,58 @@ def _sigint_handler(sig, frame):
     sys.exit(0)
 
 
+# ── Stockfish auto-install (one-shot, idempotent via sentinel file) ──────
+
+def _maybe_install_stockfish(disabled: bool = False) -> None:
+    """Auto-download Stockfish on first run, so ELO measurement works without
+    any manual setup. Idempotent — a sentinel file in `runs/` prevents repeat
+    attempts. Skipped if --no-stockfish-download is passed.
+    """
+    if disabled:
+        return
+    sentinel = _root / "runs" / ".stockfish_installed"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    if sentinel.exists():
+        # Sentinel pins the path; refresh in-memory CONFIG in case probe
+        # already cleared it.
+        try:
+            sf_path = sentinel.read_text(encoding="utf-8").strip()
+            if sf_path and Path(sf_path).exists():
+                CONFIG.stockfish_path = sf_path
+        except OSError:
+            pass
+        return
+    if CONFIG.stockfish_path and Path(CONFIG.stockfish_path).exists():
+        # Already configured manually by the user — just write sentinel so we
+        # never re-run the download.
+        try:
+            sentinel.write_text(CONFIG.stockfish_path, encoding="utf-8")
+        except OSError:
+            pass
+        return
+
+    print("[main] First run: auto-installing Stockfish for ELO measurement…")
+    print("[main]   (skip permanently with --no-stockfish-download)")
+    try:
+        from tools.install_stockfish import install as _sf_install
+        binary = _sf_install(force=False, quiet=False)
+        if binary is None:
+            # Download/extract/verify failed — write a placeholder sentinel
+            # so we don't retry every start; the user can delete it to retry.
+            sentinel.write_text("FAILED", encoding="utf-8")
+            print("[main] Stockfish auto-install failed; ELO disabled. "
+                  "Re-run later with: python tools/install_stockfish.py")
+        else:
+            CONFIG.stockfish_path = binary.as_posix()
+    except Exception as e:
+        # Never let an installer issue block training.
+        print(f"[main] Stockfish auto-install errored: {e}; ELO disabled.")
+        try:
+            sentinel.write_text("FAILED", encoding="utf-8")
+        except OSError:
+            pass
+
+
 # ── System startup ────────────────────────────────────────────────────────
 
 def initialise_system(args) -> torch.device:
@@ -78,9 +141,41 @@ def initialise_system(args) -> torch.device:
     # CUDA setup
     device = torch.device(CONFIG.device)
     if device.type == "cuda":
+        # TF32 for matmul + cudnn convs (Ampere / Ada / Blackwell): essentially
+        # free vs. fp32 precision-wise, ~2-3× faster.
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        # cudnn autotuner picks the best conv kernel for each new shape — we
+        # have static shapes so the one-shot tune is pure win.
         torch.backends.cudnn.benchmark  = True
+        # Tells the matmul dispatcher it may use TF32 / BF16 internal precision
+        # for fp32 matmuls (the GRU encoder is forced fp32 for cuDNN's RNN
+        # fastpath, so this is its main beneficiary). 'high' = TF32 if
+        # available, no behaviour change otherwise.
+        try:
+            torch.set_float32_matmul_precision("high")
+        except AttributeError:
+            pass  # PyTorch < 1.12
+
+        # Prefer flash / mem-efficient SDPA kernels over the math backend —
+        # no Attention in the current ChessNet, but harmless and ready if a
+        # future variant adds one. Guarded for older PyTorch versions.
+        try:
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(False)
+        except AttributeError:
+            pass  # PyTorch < 2.0
+
+    # Allocator: expandable segments cut VRAM fragmentation in long runs
+    # (a 4-day training session can otherwise OOM on a 12 GB card just from
+    # heap fragmentation, with plenty of total free VRAM). max_split_size
+    # keeps the allocator from holding back tiny fragments. setdefault so a
+    # user-provided override wins.
+    os.environ.setdefault(
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "max_split_size_mb:256,expandable_segments:True",
+    )
 
     # Tablebases
     if CONFIG.syzygy_path:
@@ -404,6 +499,13 @@ def phase_selfplay(
               f"{pos_s:.0f} pos/s | {g_hr:.0f} games/hr | "
               f"step={trainer.global_step}", flush=True)
 
+        # Emergency snapshot every N batches → bounds crash-loss to a few
+        # minutes (a native chess_ext access violation kills the process
+        # mid-batch; the supervisor restarts from latest.pt).
+        _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
+        if _emerg_n > 0 and batch_num % _emerg_n == 0:
+            trainer.emergency_save()
+
         # Arena evaluation
         if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
             opp_path = pool.best_opponent_path()
@@ -446,7 +548,10 @@ def phase_distillation(
     print("─" * 40)
 
     games = 0
+    batch_num = 0
+    _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
+        batch_num += 1
         n_new = worker.generate_batch(n_games=CONFIG.parallel_games)
         games += CONFIG.parallel_games
 
@@ -455,6 +560,9 @@ def phase_distillation(
             if metrics:
                 logger.log({**metrics, **logger.get_vram_metrics()},
                            trainer.global_step)
+
+        if _emerg_n > 0 and batch_num % _emerg_n == 0:
+            trainer.emergency_save()
 
         if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
             opp_path = pool.best_opponent_path()
@@ -494,7 +602,10 @@ def phase_refinement(
         pg["lr"] *= 0.1
 
     games = 0
+    batch_num = 0
+    _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
+        batch_num += 1
         n_new = worker.generate_batch(n_games=CONFIG.parallel_games)
         games += CONFIG.parallel_games
 
@@ -503,6 +614,9 @@ def phase_refinement(
             if metrics:
                 logger.log({**metrics, **logger.get_vram_metrics()},
                            trainer.global_step)
+
+        if _emerg_n > 0 and batch_num % _emerg_n == 0:
+            trainer.emergency_save()
 
         if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
             opp_path = pool.best_opponent_path()
@@ -716,6 +830,12 @@ def main() -> None:
         help="Net2Net: grow the --resume checkpoint to N residual blocks "
              "(warm-started weights, fresh optimizer), write *_grownN.pt, exit.",
     )
+    parser.add_argument(
+        "--no-stockfish-download",
+        action="store_true",
+        help="Skip the one-time auto-download of Stockfish (used for ELO "
+             "measurement). On by default the first time main.py runs.",
+    )
     args = parser.parse_args()
 
     # Apply CLI overrides
@@ -725,6 +845,9 @@ def main() -> None:
     # ── System initialisation ─────────────────────────────────────────
     signal.signal(signal.SIGINT, _sigint_handler)
     device = initialise_system(args)
+
+    # ── One-time Stockfish auto-install (for ELO measurement) ─────────
+    _maybe_install_stockfish(disabled=args.no_stockfish_download)
 
     # ── Net2Net grow (weights only, then exit) ────────────────────────
     if args.grow is not None:
@@ -768,6 +891,9 @@ def main() -> None:
         beta_start  = CONFIG.per_beta_start,
         beta_end    = CONFIG.per_beta_end,
         total_steps = CONFIG.total_steps,
+        draw_priority_mult       = CONFIG.draw_priority_mult,
+        draw_priority_start_mult = CONFIG.draw_priority_start_mult,
+        draw_priority_ramp_steps = CONFIG.draw_priority_ramp_steps,
     )
     teacher_buffer = TeacherBuffer(capacity=CONFIG.teacher_buffer_cap)
     pool           = OpponentPool(

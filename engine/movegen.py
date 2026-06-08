@@ -139,18 +139,41 @@ def policy_array_to_legal_priors(
     """
     Extract and softmax-normalise the policy logits for legal moves.
     Returns a 1-D float32 array of probabilities aligned with `legal_moves`.
+
+    Hot path: called once per MCTS leaf in `_finish_leaf`, i.e. roughly
+    `pool_size × sims_per_move` times per game. Vectorised with numpy
+    fancy-indexing instead of a Python loop + list comprehension —
+    measurably faster for the typical 20-40 legal-move case.
     """
-    indices = [move_to_action_index(m, side_to_move) for m in legal_moves]
-    # Guard against any -1 indices (shouldn't happen for legal moves)
-    logits = np.array(
-        [policy_logits[i] if i >= 0 else -1e9 for i in indices],
-        dtype=np.float32,
-    )
-    # Softmax
+    n = len(legal_moves)
+    if n == 0:
+        # Defensive: terminal positions should never call this, but keep
+        # the function total instead of dividing by zero downstream.
+        return np.zeros(0, dtype=np.float32)
+
+    # move_to_action_index is cached (LRU); the loop here is the unavoidable
+    # cost of resolving each legal move's index. Build into a pre-allocated
+    # int array to skip Python list → numpy conversion overhead.
+    indices = np.empty(n, dtype=np.int64)
+    for i, m in enumerate(legal_moves):
+        indices[i] = move_to_action_index(m, side_to_move)
+
+    # Bulk gather: one vectorised fancy-index instead of n element accesses.
+    valid_mask = indices >= 0
+    # Pre-fill with a deep negative so any -1 indices softmax to ~0.
+    logits = np.full(n, -1e9, dtype=np.float32)
+    if valid_mask.any():
+        logits[valid_mask] = policy_logits[indices[valid_mask]]
+
+    # Numerically-stable softmax.
     logits -= logits.max()
     exp = np.exp(logits)
-    probs = exp / (exp.sum() + 1e-8)
-    return probs
+    s = exp.sum()
+    if s <= 0.0:
+        # Total mass collapsed — degenerate but recoverable; fall back to
+        # uniform over legal moves so MCTS still progresses.
+        return np.full(n, 1.0 / n, dtype=np.float32)
+    return (exp / s).astype(np.float32, copy=False)
 
 
 # ── Public API ────────────────────────────────────────────────────────────

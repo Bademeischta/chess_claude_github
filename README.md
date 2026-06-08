@@ -15,8 +15,10 @@ C++-Erweiterung, das neuronale Netz in PyTorch (CUDA, BF16).
 - [Befehle](#befehle)
 - [Trainingsablauf](#trainingsablauf)
 - [Gegen die KI spielen](#gegen-die-ki-spielen)
+- [ELO gegen Stockfish messen](#elo-gegen-stockfish-messen)
 - [Monitoring](#monitoring)
 - [Hardware-Autokonfiguration](#hardware-autokonfiguration)
+- [Stabilität & Crash-Resistenz](#stabilität--crash-resistenz)
 - [Realistische Performance](#realistische-performance)
 - [Projektstruktur](#projektstruktur)
 
@@ -146,7 +148,10 @@ Aktiviert exakte Endspiel-Auswertung (≤5 Steine) und Endspiel-Pretraining.
 | `--play` | – | – | Interaktive Partie gegen die KI |
 | `--side` | `white`, `black` | `white` | Deine Farbe bei `--play` |
 | `--sims` | Ganzzahl | Config-Wert | MCTS-Sims pro KI-Zug bei `--play` |
+| `--show` | – | – | Bei `--play`: zeigt KI-Berechnung (Eval, top Züge, PV) |
+| `--ponder` | – | – | Bei `--play`: KI rechnet während deines Zugs weiter |
 | `--grow` | N | – | Net2Net: `--resume`-Checkpoint auf N Residual-Blöcke vergrößern, `*_grownN.pt` schreiben, beenden |
+| `--no-stockfish-download` | – | – | Überspringt den einmaligen Stockfish-Auto-Download beim ersten Lauf |
 
 `Strg+C` während des Trainings speichert sauber einen Checkpoint vor dem
 Beenden. Ein per `--resume` geladener Checkpoint mit abweichender Blockzahl
@@ -180,11 +185,14 @@ Supervidiertes Vortraining auf Tablebase-Endspielen. Ohne Syzygy übersprungen.
 
 **Phase 1 — Self-Play-Bootstrap** (Ziel ~1600 ELO)
 - *Fast-Bootstrap:* solange das Netz zufällig ist, nur 50 Sims/Zug
-  (800 Sims auf einem Zufallsnetz bringen nichts, kosten aber 16×).
+  (höhere Sim-Budgets auf einem Zufallsnetz bringen nichts, kosten aber
+  ein Vielfaches).
 - N Spiele laufen kontinuierlich parallel; fertige Spiele werden sofort
   durch neue ersetzt, damit der GPU-Batch nie schrumpft.
-- Ab Schritt 500 (echtes Trainingssignal vorhanden) werden die Sims auf
-  200/800 hochgefahren.
+- Ab Schritt **8 000** (Bootstrap-Phase abgeschlossen, Replay-Buffer
+  gefüllt) werden die Sims auf den vollen Standard hochgefahren:
+  **128 Sims** (Standard-Self-Play) und **256 Sims** (Teacher-Spiele).
+  Steuerbar via `bootstrap_ramp_step` in `config.py`.
 - Training startet, sobald der Replay-Buffer ≥ 5 000 Stellungen hat.
 
 **Phase 2 — Teacher-Distillation** (Ziel ~2200 ELO)
@@ -215,6 +223,54 @@ python main.py --play
 
 ---
 
+## ELO gegen Stockfish messen
+
+Objektive Stärkemessung über UCI gegen Stockfish, der auf einen festen ELO
+gepinnt wird (`UCI_LimitStrength` + `UCI_Elo`). Vor dem ersten Lauf einmal
+Stockfish installieren (oder einen vorhandenen Pfad angeben):
+
+```bash
+python tools/install_stockfish.py
+```
+
+Stockfish landet unter `tools/stockfish/…`; der Pfad wird in
+`runs/.stockfish_installed` gemerkt. Danach:
+
+```bash
+# Schnelltest: 20 Partien vs SF@1500, neuester Checkpoint
+python tools/elo_vs_stockfish.py --games 20 --elo 1500
+
+# Längerer Lauf mit explizitem Checkpoint + mehr Sims
+python tools/elo_vs_stockfish.py --games 100 --elo 1800 \
+    --sims 400 --movetime 0.2 \
+    --resume checkpoints/step_0050000.pt
+```
+
+Ausgabe: W/D/L, ELO-Differenz zu SF und geschätztes Netz-ELO mit 95 %-CI.
+Wenig Spiele → sehr breite CI (Faustregel: ≥ 100 Spiele für brauchbare Werte).
+
+| Flag | Bedeutung |
+|---|---|
+| `--stockfish` | Pfad zur SF-Binary (Default: aus Installer-Sentinel) |
+| `--games` | Anzahl Partien (Default 20, alternierende Farben) |
+| `--elo` | SF-Stärke-Anker, 1320–3190 (Default 1500) |
+| `--sims` | Eigene MCTS-Sims/Zug (Default: aus `config.py`) |
+| `--movetime` | SF Bedenkzeit pro Zug in Sekunden (Default: automatisch an unsere MCTS-Zeit angepasst, ≈ `mcts_sims × 0.025 s`) |
+| `--depth` | Fixe SF-Suchtiefe statt `--movetime` (reproduzierbarer, aber zeitunabhängig) |
+| `--sf-hash-mb` | SF Hash-Tabellengröße in MB (Default 256) |
+| `--sf-threads` | SF Worker-Threads (Default 4) |
+| `--resume` | Checkpoint laden (Default: neueste `.pt` aus `checkpoints/`) |
+| `--auto` / `--auto-budget` / `--auto-low` / `--auto-high` | Adaptive ELO-Bisektionssuche über SF-Anker |
+
+> ⚠ **Fair-Play-Hinweis:** Der frühere Default `--movetime 0.1` war stark zugunsten
+> der KI verzerrt (SF: 100 ms vs. KI: mehrere Sekunden bei 128 Sims). Der neue
+> Auto-Default hängt die SF-Bedenkzeit an unsere MCTS-Zeit. Für ehrliche
+> ELO-Messung außerdem `--sf-hash-mb 512 --sf-threads 4` (oder die Cores deiner
+> CPU) setzen; eine SF-Instanz mit Default-16-MB-Hash und einem Thread ist
+> 150-300 ELO schwächer.
+
+---
+
 ## Monitoring
 
 ```bash
@@ -235,22 +291,115 @@ Bei jedem Start prüft `utils/system_probe.py` GPU/CPU/RAM und leitet
 - **Batch-Größe** (nach freiem VRAM)
 - **Parallele Spiele** (nach GPU-Breite — Self-Play ist GPU-gebunden, nicht
   CPU-gebunden)
-- **Replay-Buffer-Größe** (realistisch ~46 KB/Position, gedeckelt auf
-  40 % des freien RAM → Ringpuffer recycelt, kein OOM)
+- **Replay-Buffer-Größe** (realistisch ~40 KB/Position effektiv inkl.
+  Python-Overhead, gedeckelt auf 40 % des verfügbaren RAM → Ringpuffer
+  recycelt, OS und MCTS-Pool behalten Headroom)
 - **torch.compile** (auf Windows aus — kein Triton verfügbar)
 
 Manuelle Defaults stehen in `config.py`.
 
 ---
 
+## Performance-Tuning
+
+Die Defaults sind auf RTX 5070 + Ryzen 7 8700F kalibriert. Wer woanders läuft
+oder mehr aus der Hardware holen will, hat diese Hebel:
+
+### ENV-Variablen
+
+| Variable | Wirkung |
+|---|---|
+| `CUDA_LAUNCH_BLOCKING=1` | Alle CUDA-Kernels synchron — nur für Debug. **NICHT** im Produktivlauf setzen (kostet 2-5× Throughput). |
+| `CHESS_AI_NO_CPP=1` | C++-Engine deaktivieren, Python-Fallback erzwingen. Sehr viel langsamer; nur zum Reproduzieren eines C++-Bugs. |
+| `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256,expandable_segments:True` | Reduziert VRAM-Fragmentierung bei langen Runs (sinnvoll ab Tagen Trainingsdauer). |
+| `TORCH_LOGS=recompiles` | Wenn `torch.compile` aktiv ist (Linux/WSL), zeigt jede ungewollte Re-Compile-Stelle. |
+
+### Heißeste Stellschrauben in `config.py`
+
+| Feld | Default | Hinweis |
+|---|---|---|
+| `batch_size` | 512 (hw-derived) | Bei 12 GB & 10-Blöcke-Netz lassen sich auch 768 fahren — testen ob VRAM reicht. |
+| `parallel_games` | 6 (hw-derived) | Self-Play-Pool; 8 läuft erfahrungsgemäß auch sauber, höher bringt nichts mehr (GPU-Decke). |
+| `mcts_sims` | 128 | Self-Play. 256+ erst, wenn das Netz solide spielt. |
+| `mcts_sims_critical` / `mcts_sims_teacher` | 256 / 256 | DCA-Boost bzw. Teacher-Spiele. |
+| `grad_ckpt_from` | `None` (auto) | Bei ≤14 Blöcken automatisch aus — passt für 12 GB. Bei sehr engem VRAM Wert manuell setzen (z. B. 4). |
+| `precision` | `bf16` (hw-derived) | Blackwell hat nativen BF16-Tensor-Core und braucht keinen Loss-Scaler. FP16 nur, wenn BF16-Support fehlt. |
+| `inference_backend` | `torch` | `onnx` ist verfügbar und nach `python tools/verify_onnx.py` (Parität) sowie `python tools/bench_infer.py` (Throughput) optional umstellbar. |
+
+### Quick Benchmark
+
+```bash
+python tools/bench_infer.py 60     # 60 s Torch vs ONNX, pos/s pro Backend
+```
+
+Misst Self-Play-Throughput in der aktuellen Konfiguration. **Vor und nach
+Konfigurationsänderungen ausführen**, um echte Wirkung zu sehen.
+
+---
+
+## Stabilität & Crash-Resistenz
+
+Das Training läuft oft mehrere Stunden bis Tage; daher sind mehrere
+Verteidigungslinien gegen stille Abstürze eingebaut:
+
+- **`faulthandler`** (in `main.py` aktiviert): native Crashes aus
+  `chess_ext.pyd`, CUDA oder cuDNN landen mit Stacktrace im stderr-Log,
+  statt den Prozess wortlos zu beenden.
+- **`CUDA_LAUNCH_BLOCKING=1`** ist **kein** Default mehr — synchroner
+  CUDA-Modus kostet 2-5× Throughput und ist nur für Debug sinnvoll. Bei
+  Bedarf gezielt vor dem Aufruf setzen:
+  ```powershell
+  $env:CUDA_LAUNCH_BLOCKING = "1"; python main.py --phase=selfplay
+  ```
+  Native Crashes werden weiterhin durch `faulthandler` mit Stacktrace
+  sichtbar — die synchrone Variante ist nur nötig, wenn du eine
+  asynchrone CUDA-Fehlermeldung auf den exakten Kernel zurückführen
+  willst.
+- **Self-Play-Generator (`mcts/tree.py:game_stream`)** wrappt seinen
+  Hauptloop in `try/except` und dumpt bei Crashs die aktuellen FENs
+  aller Pool-Spiele sowie Zugnummern. Stille Generator-Tode (häufige
+  Ursache von vermeintlich „spontanem Exit") sind so ausgeschlossen.
+- **NaN/Inf-Schutz im Trainer**: vor jedem `loss.backward()` prüft der
+  Trainer `torch.isfinite(loss)` und überspringt den Schritt sauber,
+  statt AdamW-Momente mit NaN-Gradienten zu vergiften.
+- **Policy-Logit-Clamp `[-30, 30]`** vor Softmax (`model/heads.py`):
+  verhindert NaN-Lawinen aus runaway-Logits beim Bootstrap.
+- **Replay-Buffer-Bounds**: Sparse-Policy-Indizes werden bei `__init__`
+  und beim Reconstruct gegen die Aktionsgröße geprüft (`IndexError`
+  statt stille Datenkorruption).
+- **Vollständige Checkpoint-State**: `_entropy_history` und PER-Beta-Step
+  (`replay_buffer._step`) wandern mit ins Checkpoint, so dass ein
+  Resume die ERED-Kalibrierung und die IS-Gewichte nicht reißt.
+- **Optimizer-Reset-Warnung**: falls ein Resume die AdamW-Momente nicht
+  laden kann (Arch-Wechsel), wird das laut ins Log geschrieben — ein
+  Loss-Spike danach ist erwartet, nicht ein Daten-Bug.
+- **Strg+C** speichert sauber einen Checkpoint, bevor der Prozess endet.
+
+Falls das Training trotzdem mal exit-t: im Log nach `[game_stream] FATAL`
+oder einem `Fatal Python error:` vom faulthandler suchen — dort steht
+der echte Auslöser, nicht erst die Folge-Symptome.
+
+---
+
 ## Realistische Performance
 
 Self-Play ist **GPU-gebunden** am Netz-Forward. Auf einer RTX 5070
-(26-M-Netz, eager BF16):
+(14–23 M-Netz, eager BF16, NCHW, kein `CUDA_LAUNCH_BLOCKING`):
 
-- NN-Forward-Decke: ~9 600 Evals/s bei Batch 122
-- ~250–290 k Positionen/h bei 50 Sims (Bootstrap)
-- ~70 k Positionen/h bei 200 Sims (Standard)
+| Metrik | Erwartete Größenordnung |
+|---|---|
+| NN-Forward-Decke @ Batch 122 | ~15 000–30 000 Evals/s |
+| Self-Play Bootstrap (50 Sims) | ~500 000–900 000 Positionen/h |
+| Self-Play Standard (128 Sims) | ~150 000–300 000 Positionen/h |
+| Train-Step (Batch 512, BF16) | abhängig vom Replay-Sample, einstellige ms-Region |
+
+> Die obigen Zahlen sind grobe Schätzungen für die aktuelle Code-Version
+> nach dem Entfernen von `CUDA_LAUNCH_BLOCKING` und dem Deaktivieren des
+> überflüssigen Gradient-Checkpointing bei ≤14 Blöcken. Ein channels_last
+> Memory-Format wurde getestet und wieder entfernt — auf 8×8 spatial-dims
+> kostet die Layout-Transition in den Heads mehr als die NHWC-Conv-Kernels
+> sparen. Für deine Hardware nach dem Fix-Pass mit
+> `python tools/bench_infer.py 60` neu messen und die Tabelle ersetzen.
 
 > Die C++-Erweiterung beschleunigt **nur** Zuggenerierung/Suchbaum, **nicht**
 > den GPU-Forward. Es gibt daher keinen großen „C++-Multiplikator".
