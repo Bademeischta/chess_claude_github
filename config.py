@@ -99,16 +99,18 @@ class ChessAIConfig:
     # values interpretable without locking them — set to 0.0 to disable.
     piece_value_anchor_weight: float = 1e-3
 
-    aux_loss_weight: float = 0.9  # 0.2 → 0.6 → 0.9: bootstrap is stuck in
-                                  # the "value head sits at 0 because every
-                                  # game is a draw" deadlock for far longer
-                                  # than predicted. Cranking the aux head
-                                  # weight up gives the value tower a
-                                  # dominant gradient from the material-
-                                  # balance signal, which is non-trivial
-                                  # on most positions even when WDL labels
-                                  # collapse to 0.5. Once decisive games
-                                  # dominate the buffer, drop back to ~0.2.
+    aux_loss_weight: float = 2.0  # 0.2 → 0.6 → 0.9 → 2.0: at step ~30k the
+                                  # value head fully regressed (v=0.0000 for
+                                  # 11+ consecutive log lines). 0.9 wasn't
+                                  # dominant enough — the WDL loss kept
+                                  # pulling the tower back to the trivial
+                                  # all-zero solution. 2.0 makes the
+                                  # material-balance aux head the dominant
+                                  # gradient source, FORCING the value
+                                  # tower to learn something non-trivial.
+                                  # Drop back to ~0.5 once the value-loss
+                                  # has stayed above 0.1 for at least
+                                  # 5000 consecutive steps.
     aux_steps: int = 5_000        # legacy: no longer consulted by the trainer
 
     # ── TD(λ) value blending ─────────────────────────────────────────────
@@ -151,14 +153,17 @@ class ChessAIConfig:
     parallel_games: int = 6  # hw-derived
     temperature_moves: int = 30    # τ=1.0 for first N moves, then τ→0
     temperature_final: float = 0.1 # Temperature after temperature_moves
-    max_game_moves: int = 120      # Hard cap on game length (half-moves).
-                                   # 150→120: at the bootstrap level the
-                                   # tail beyond move 120 is almost always
-                                   # shuffling that ends in a phantom-draw.
-                                   # Cutting it saves ~20% self-play time
-                                   # AND raises the share of decisive games
-                                   # (resign more likely to fire before the
-                                   # cap kicks in).
+    max_game_moves: int = 80       # Hard cap on game length (half-moves).
+                                   # 150→120→80: at step ~30k the value head
+                                   # had completely collapsed back to 0
+                                   # because draws dominated. Cutting the
+                                   # cap to 80 forces decisive results MUCH
+                                   # earlier — any game where neither side
+                                   # makes progress gets cut. Yes some
+                                   # legitimate long games get truncated,
+                                   # but at this stage we vastly prefer
+                                   # 200 short decisive games over 50 long
+                                   # drawn ones for value-head supervision.
 
     # ── Resign mechanism (caps wasted compute on already-lost games) ─────
     # When the side-to-move's MCTS root Q stays below -resign_q for
@@ -185,7 +190,13 @@ class ChessAIConfig:
     # MATERIALLY UNBALANCED position" so the value head sees decisive
     # outcomes. 14 random plies usually leaves one side a piece up or down,
     # which dramatically raises the share of decisive games.
-    random_opening_plies: int = 14
+    random_opening_plies: int = 20
+    # 8 → 14 → 20: with 20 random plies most games START already with one
+    # side a piece (or more) ahead, GUARANTEEING decisive games. The cost
+    # is that the opening phase of the resulting games is unrealistic, but
+    # at this training stage we need the value head to see win/loss
+    # outcomes, not realistic openings. Drop back to ~8 once the model has
+    # an actual opening preference (policy entropy < 3.2).
     # Optional path to a file with one FEN per line; if set, each game starts
     # from a random FEN drawn from it (applied before random_opening_plies).
     opening_book_path: str = ""
@@ -214,12 +225,16 @@ class ChessAIConfig:
     # there is no decisive supervision to learn from — down-weighting draws
     # there throws away the only data we have. Ramping in delays the
     # rebalancing until decisive games actually populate the buffer.
-    draw_priority_mult: float = 0.3        # was 0.5 — more aggressive
-                                            # down-weighting once the ramp
-                                            # is in. Combined with the
-                                            # shorter ramp below this
-                                            # actively starves the value
-                                            # head of draw-dominated noise.
+    draw_priority_mult: float = 0.1        # 0.5 → 0.3 → 0.1: with the value
+                                            # head fully regressed at step
+                                            # ~30k we need to almost completely
+                                            # exclude draws from the training
+                                            # distribution. 0.1 means a drawn
+                                            # position has 10% the chance of
+                                            # a decisive position to be sampled.
+                                            # The buffer still contains them,
+                                            # but the value head is now starved
+                                            # of the "predict 0.5" shortcut.
     draw_priority_start_mult: float = 1.0
     draw_priority_ramp_steps: int = 25_000  # was 50_000 — at step 16k+ the
                                             # ramp was barely halfway in.
@@ -268,10 +283,13 @@ class ChessAIConfig:
     # batch-generation interval. Disk-cost is trivial (one .pt per file).
     checkpoint_every: int = 200
     # Buffer snapshots (replay + teacher → pickle.gz next to checkpoint) every
-    # N checkpoints. With checkpoint_every=200 and buffer_save_every=5 a
-    # buffer dump lands every 1000 steps (same ~hourly cadence as before).
-    # Bounded disk usage (single sliding snapshot pair). Set 0 to disable.
-    buffer_save_every: int = 5
+    # N checkpoints. With checkpoint_every=200 and buffer_save_every=1 a
+    # buffer dump lands every 200 steps (about every 30 min). Native crashes
+    # were eating fresh self-play data on every restart at the old cadence
+    # of 5 because the buffer would rewind to its last-saved state on
+    # resume from latest.pt; saving every checkpoint costs ~3 GB disk for
+    # the rolling snapshot pair but means no replay-data loss on crash.
+    buffer_save_every: int = 1
     # Lightweight emergency snapshot every N self-play batches (separate
     # from `checkpoint_every`). Overwrites `latest.pt` so disk stays bounded;
     # the supervisor wrapper reads this when auto-restarting after a crash
@@ -291,8 +309,8 @@ class ChessAIConfig:
     stockfish_path: str = "C:/Users/silas/OneDrive/Desktop/ChatKi/chess_ai/tools/stockfish/stockfish/stockfish-windows-x86-64-avx2.exe"
 
     # ── Endgame pretraining ──────────────────────────────────────────────
-    pretrain_positions: int = 2_000_000
-    pretrain_epochs: int = 3
+    pretrain_positions: int = 3_000_000
+    pretrain_epochs: int = 5
 
     # ── ELO tracking ────────────────────────────────────────────────────
     initial_elo: float = 1000.0

@@ -70,6 +70,12 @@ def main() -> int:
                     help="Stockfish hash-table size (MB).")
     ap.add_argument("--sf-threads", type=int, default=4,
                     help="Stockfish worker threads.")
+    ap.add_argument("--sf-skill", type=int, default=None,
+                    help="Stockfish Skill Level 0-20 (rough ELO: 0≈800, "
+                         "5≈1500, 10≈2000, 20=full). Use this instead of "
+                         "--elo when you need to test below SF's UCI_Elo "
+                         "floor of 1320 (e.g. very early-training nets). "
+                         "Disables UCI_LimitStrength.")
     ap.add_argument("--resume", default=None,
                     help="Checkpoint (default: newest in checkpoint dir).")
     ap.add_argument("--auto", action="store_true",
@@ -159,10 +165,25 @@ def main() -> int:
         return chess.engine.Limit(time=float(args.movetime))
 
     def _set_sf_elo(elo: int) -> None:
-        try:
-            sf.configure({"UCI_LimitStrength": True, "UCI_Elo": int(elo)})
-        except chess.engine.EngineError:
-            print(f"[elo] Stockfish rejected UCI_Elo={elo}; using default strength.")
+        if args.sf_skill is not None:
+            # Skill Level mode — covers the regime below the UCI_Elo floor.
+            # Stockfish must NOT be in UCI_LimitStrength mode when Skill Level
+            # drives the strength, otherwise it silently ignores the skill
+            # setting and plays at the floor's strength instead.
+            try:
+                sf.configure({"UCI_LimitStrength": False,
+                              "Skill Level": int(args.sf_skill)})
+                print(f"[elo] Stockfish Skill Level = {int(args.sf_skill)} "
+                      f"(approx. {[800,950,1100,1250,1400,1500,1600,1700,1800,1900,2000,2050,2100,2150,2200,2300,2400,2500,2700,2850,3000][max(0,min(20,int(args.sf_skill)))]} ELO).")
+            except chess.engine.EngineError as e:
+                print(f"[elo] Failed to set Skill Level: {e}")
+        else:
+            try:
+                sf.configure({"UCI_LimitStrength": True, "UCI_Elo": int(elo)})
+            except chess.engine.EngineError:
+                print(f"[elo] Stockfish rejected UCI_Elo={elo} "
+                      f"(SF floor is 1320 — use --sf-skill 0-20 for weaker "
+                      f"opponents). Using default strength.")
 
     def _play_batch(n: int, label: str = "") -> tuple[int, int, int]:
         """Play `n` games alternating colours; return (W, D, L)."""

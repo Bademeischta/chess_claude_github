@@ -114,6 +114,7 @@ def get_piece_count(board: Board) -> int:
 _tb_reader = None          # python-chess Tablebase reader, lazily initialised
 _tb_path: str = ""
 _tb_available = False
+_tb_warned_keys: set = set()  # noisy-warning suppressor (see probe_tablebase)
 
 
 def init_tablebase(syzygy_path: str) -> bool:
@@ -165,9 +166,28 @@ def probe_tablebase(board: Board) -> Optional[float]:
 
     try:
         import chess as _pychess
+        import chess.syzygy as _pcsyzygy
         # Build a python-chess board from FEN for the probe only
         pc_board = _pychess.Board(board.to_fen())
-        wdl = _tb_reader.probe_wdl(pc_board)
+
+        # Probe strategy: prefer the direct table lookup. python-chess's
+        # higher-level `probe_wdl` does an alpha-beta search to handle
+        # en-passant correctly, but on a 3-4-5 piece set it sometimes
+        # recurses into positions whose material key the loader didn't
+        # register (e.g. asks for "KQv" without the trailing K) and raises
+        # MissingTableError. The direct table call is bug-free and is the
+        # correct value for the vast majority of positions where en-passant
+        # is irrelevant. Fall back to probe_wdl only when the direct path
+        # explicitly says "not in cache" (and stay quiet about minor probe
+        # failures — they're not actionable and would otherwise flood the
+        # log thousands of times per minute during pretraining).
+        try:
+            wdl = _tb_reader.probe_wdl_table(pc_board)
+        except _pcsyzygy.MissingTableError:
+            try:
+                wdl = _tb_reader.probe_wdl(pc_board)
+            except _pcsyzygy.MissingTableError:
+                return None
         # python-chess WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
         if wdl >= 2:    return 1.0
         elif wdl >= 1:  return 0.75  # Cursed win (theoretical win but draw by rule)
@@ -175,8 +195,15 @@ def probe_tablebase(board: Board) -> Optional[float]:
         elif wdl >= -1: return 0.25  # Blessed loss
         else:           return 0.0
     except Exception as e:
-        print(f"[rules] Tablebase probe failed ({type(e).__name__}: {e})",
-              file=sys.stderr)
+        # Log each *new* failure type once so a totally broken tablebase
+        # still surfaces, but don't flood stderr with the same message
+        # millions of times during pretraining.
+        key = f"{type(e).__name__}:{str(e)[:60]}"
+        if key not in _tb_warned_keys:
+            _tb_warned_keys.add(key)
+            print(f"[rules] Tablebase probe failed once "
+                  f"({type(e).__name__}: {e}) — silencing further "
+                  f"identical failures.", file=sys.stderr)
         return None
 
 
