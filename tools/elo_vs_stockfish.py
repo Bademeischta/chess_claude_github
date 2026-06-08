@@ -43,12 +43,6 @@ from mcts.tree import MCTSTree
 from utils.ckpt_arch import latest_checkpoint, match_arch
 
 
-def _our_move(tree: MCTSTree, board: Board, sims: int) -> int:
-    move, _ = tree.search(board, sims, temperature=CONFIG.temperature_final,
-                          use_dca=False, keep_history=True)
-    return move
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stockfish", default=CONFIG.stockfish_path,
@@ -322,17 +316,36 @@ def main() -> int:
         tree.reset(ob)
 
         while not pyb.is_game_over(claim_draw=True):
+            # Map legal moves to their UCI strings to bridge between engines
+            legal = ob.legal_moves()
+            uci_map = {_move_uci(m): m for m in legal}
+
             our_turn = (pyb.turn == chess.WHITE) == we_white
             if our_turn:
-                mv = _our_move(tree, ob, sims)
-                uci = _move_uci(mv)
+                # Search with tree recycling: manually run simulations instead
+                # of tree.search() to avoid the internal reset().
+                for _ in range(sims):
+                    tree.run_one_simulation()
+
+                # Greedy selection (near-zero temperature)
+                a = tree.root_analysis()
+                move_int = a["top"][0][0] if a["top"] else tree.select_move(0.01)[0]
+                uci = _move_uci(move_int)
                 pyb.push(chess.Move.from_uci(uci))
             else:
+                # Stockfish move
                 res = sf.play(pyb, chess.engine.Limit(time=args.movetime))
-                pyb.push(res.move)
                 uci = res.move.uci()
-            ob = Board.from_fen(pyb.fen())
-            tree.reset(ob)  # re-sync tree to the authoritative position
+                pyb.push(res.move)
+                move_int = uci_map.get(uci)
+
+            if move_int is not None:
+                ob = ob.apply_move(move_int)
+                tree.advance(move_int, ob)
+            else:
+                # Fallback if moves don't align (should not happen)
+                ob = Board.from_fen(pyb.fen())
+                tree.reset(ob, keep_history=True)
 
         res = pyb.result(claim_draw=True)  # "1-0","0-1","1/2-1/2"
         if res == "1/2-1/2":

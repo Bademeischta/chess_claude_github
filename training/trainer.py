@@ -404,14 +404,20 @@ class Trainer:
 
         # ── Checkpoint ───────────────────────────────────────────────
         if self.global_step % self.cfg.checkpoint_every == 0:
-            self.save_checkpoint()
-            # Buffer persistence: every Nth checkpoint, dump replay + teacher
-            # buffers next to the .pt. Survives a crash without losing hours
-            # of self-play data. Save cadence configurable; default 5 × ckpt
-            # interval keeps overhead well under 1 %.
-            buf_every = getattr(self.cfg, "buffer_save_every", 5) * self.cfg.checkpoint_every
-            if buf_every > 0 and self.global_step % buf_every == 0:
-                self._save_buffers()
+            ckpt_path = self.save_checkpoint()
+
+            # Periodically save the replay and teacher buffers (every 5 checkpoints)
+            if self.global_step % (self.cfg.checkpoint_every * 5) == 0:
+                print(f"[Trainer] Saving buffers at step {self.global_step}...")
+                self.replay_buffer.save(ckpt_path.replace(".pt", "_replay.pkl"))
+                self.teacher_buffer.save(ckpt_path.replace(".pt", "_teacher.pkl"))
+
+        # Cheap policy entropy for *logging* every step (the ERED regulation
+        # in _regulate_entropy stays on its 5000-step cadence and is unchanged
+        # — this is display-only so H is never a stale nan).
+        with torch.no_grad():
+            _lp  = F.log_softmax(policy_logits_r.float(), dim=-1)
+            _ent = float((-(_lp.exp() * _lp).sum(-1)).mean().item())
 
         # ── Metrics ───────────────────────────────────────────────────
         # Scalar .item() calls each force a cudaDeviceSynchronize. Strategy:

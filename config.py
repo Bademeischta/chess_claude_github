@@ -185,18 +185,8 @@ class ChessAIConfig:
     # Each self-play game starts from a position obtained by playing this many
     # uniform-random legal plies from the standard start (NOT recorded as
     # training targets). 0 = always start from the standard position
-    # (unchanged behaviour). 8 → 14: bootstrap is draw-collapse-bound, and
-    # the strongest lever against that is "ensure each game starts from a
-    # MATERIALLY UNBALANCED position" so the value head sees decisive
-    # outcomes. 14 random plies usually leaves one side a piece up or down,
-    # which dramatically raises the share of decisive games.
-    random_opening_plies: int = 20
-    # 8 → 14 → 20: with 20 random plies most games START already with one
-    # side a piece (or more) ahead, GUARANTEEING decisive games. The cost
-    # is that the opening phase of the resulting games is unrealistic, but
-    # at this training stage we need the value head to see win/loss
-    # outcomes, not realistic openings. Drop back to ~8 once the model has
-    # an actual opening preference (policy entropy < 3.2).
+    # (unchanged behaviour). A value of 6–10 markedly diversifies replay data.
+    random_opening_plies: int = 6
     # Optional path to a file with one FEN per line; if set, each game starts
     # from a random FEN drawn from it (applied before random_opening_plies).
     opening_book_path: str = ""
