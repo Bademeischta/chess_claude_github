@@ -177,7 +177,22 @@ def initialise_system(args) -> torch.device:
         "max_split_size_mb:256,expandable_segments:True",
     )
 
-    # Tablebases
+    # Tablebases — auto-detect a project-local ./syzygy/ folder if no path
+    # has been configured. This makes the AI play perfectly in all ≤5-piece
+    # endgames during inference (self-play, web UI, ELO matches), not just
+    # during the dedicated --phase=pretraining step. Without this, the user
+    # would have to pass --syzygy=... on every single invocation, which is
+    # easy to forget and silently leaves the value head guessing in
+    # positions the tablebase already has a perfect answer for.
+    if not CONFIG.syzygy_path:
+        auto_path = _root / "syzygy"
+        if auto_path.is_dir():
+            rtbw_files = list(auto_path.glob("*.rtbw"))
+            if rtbw_files:
+                CONFIG.syzygy_path = str(auto_path)
+                print(f"[main] Auto-detected Syzygy tablebases at "
+                      f"{CONFIG.syzygy_path} ({len(rtbw_files)} .rtbw files)")
+
     if CONFIG.syzygy_path:
         ok = init_tablebase(CONFIG.syzygy_path)
         print(f"[main] Syzygy tablebases: {'loaded' if ok else 'not found'}")
@@ -435,7 +450,145 @@ def phase_pretraining(
             if metrics and step % 500 == 0:
                 logger.log(metrics, trainer.global_step)
 
+    # Force-save what we learned. checkpoint_every=200 means short pretrain
+    # epochs (e.g. the merged-buffer flow with only ~50 steps) wouldn't
+    # otherwise hit the cadence and the gains would be lost on next launch.
+    try:
+        path = trainer.emergency_save()
+        print(f"[Phase 0] Final checkpoint saved -> {path}")
+    except Exception as e:
+        print(f"[Phase 0] WARNING: final checkpoint save failed "
+              f"({type(e).__name__}: {e})")
     print(f"[Phase 0] Pretraining complete. Steps: {trainer.global_step}")
+
+
+def _merge_buffer_file(replay_buffer, path: str) -> int:
+    """Load a saved PrioritizedReplayBuffer pickle and APPEND its records
+    into the live replay_buffer (rather than replacing it).
+
+    Returns the number of records actually appended. The pickle format
+    matches what PrioritizedReplayBuffer.save() writes: a dict with keys
+    "data", "priorities", "ptr", "size", etc. We only care about "data"
+    here — priorities get auto-assigned by the live buffer's add().
+    """
+    import pickle
+    if not os.path.isfile(path):
+        print(f"[merge] WARNING: buffer file not found: {path}",
+              file=sys.stderr)
+        return 0
+    print(f"[merge] Loading {path} ...")
+    with open(path, "rb") as f:
+        state = pickle.load(f)
+    data = state.get("data", [])
+    size = int(state.get("size", 0))
+    appended = 0
+    for i in range(min(size, len(data))):
+        rec = data[i]
+        if rec is None:
+            continue
+        try:
+            replay_buffer.add(rec)
+            appended += 1
+        except Exception as e:
+            # A single bad record shouldn't kill the whole merge.
+            if appended == 0:
+                # Surface the first failure type — silently dropping
+                # everything would be very confusing.
+                print(f"[merge] WARNING: skipping bad record "
+                      f"({type(e).__name__}: {e})", file=sys.stderr)
+    print(f"[merge] Appended {appended:,} of {size:,} records "
+          f"into the live replay buffer (now {len(replay_buffer):,} total).")
+    return appended
+
+
+def phase_sf_distill(
+    trainer, model, replay_buffer, teacher_buffer, pool, logger, worker, device,
+    buffer_path: str = "replay_buffer/sf_distill.pkl",
+    epochs: int = 3,
+) -> None:
+    """Phase SF-Distill: load Stockfish-vs-Stockfish positions and train.
+
+    Pre-requisite: run `python tools/stockfish_distill.py` first to
+    generate the buffer file. This phase merges those records into the
+    live replay buffer and trains the network on them for `epochs`
+    passes. Each record's policy target is a one-hot on Stockfish's
+    chosen move, value target is the game outcome.
+
+    Designed to break the self-play bootstrap deadlock: instead of
+    waiting for the random net to stumble onto real chess by itself,
+    show it real chess moves directly.
+    """
+    print("\n[Phase SF] Stockfish Distillation Training")
+    print("-" * 40)
+
+    n = _merge_buffer_file(replay_buffer, buffer_path)
+    if n == 0:
+        print("[Phase SF] No records loaded — skipping. Generate the "
+              "buffer first with: python tools/stockfish_distill.py")
+        return
+
+    steps_per_epoch = max(1, n // CONFIG.batch_size)
+    for epoch in range(epochs):
+        print(f"[Phase SF] Epoch {epoch+1}/{epochs} "
+              f"({steps_per_epoch} steps)")
+        for step in range(steps_per_epoch):
+            metrics = trainer.train_step()
+            if metrics and step % 500 == 0:
+                logger.log(metrics, trainer.global_step)
+    # Force-save before phase ends — sf_distill typically runs fewer
+    # steps than checkpoint_every (200), so without this the SF gains
+    # would be discarded on the next launch.
+    try:
+        path = trainer.emergency_save()
+        print(f"[Phase SF] Final checkpoint saved -> {path}")
+    except Exception as e:
+        print(f"[Phase SF] WARNING: final checkpoint save failed "
+              f"({type(e).__name__}: {e})")
+    print(f"[Phase SF] Distillation complete. Steps: {trainer.global_step}")
+
+
+def phase_puzzles(
+    trainer, model, replay_buffer, teacher_buffer, pool, logger, worker, device,
+    buffer_path: str = "replay_buffer/lichess_puzzles.pkl",
+    epochs: int = 3,
+) -> None:
+    """Phase Puzzles: load Lichess tactical puzzles and train.
+
+    Pre-requisite: run `python tools/lichess_puzzles.py` first to
+    generate the buffer file. Each record has a one-hot policy target
+    on the puzzle's correct move and wdl=1.0 from the solver's POV.
+
+    This is pure tactics training — it teaches the network to spot
+    mate-in-N, forks, pins, etc. The kind of patterns self-play never
+    discovers on its own because it can't produce examples it can't see.
+    """
+    print("\n[Phase Puzzles] Lichess Tactics Training")
+    print("-" * 40)
+
+    n = _merge_buffer_file(replay_buffer, buffer_path)
+    if n == 0:
+        print("[Phase Puzzles] No records loaded — skipping. Generate "
+              "the buffer first with: "
+              "python tools/lichess_puzzles.py")
+        return
+
+    steps_per_epoch = max(1, n // CONFIG.batch_size)
+    for epoch in range(epochs):
+        print(f"[Phase Puzzles] Epoch {epoch+1}/{epochs} "
+              f"({steps_per_epoch} steps)")
+        for step in range(steps_per_epoch):
+            metrics = trainer.train_step()
+            if metrics and step % 500 == 0:
+                logger.log(metrics, trainer.global_step)
+    # Force-save before phase ends — same reason as phase_sf_distill.
+    try:
+        path = trainer.emergency_save()
+        print(f"[Phase Puzzles] Final checkpoint saved -> {path}")
+    except Exception as e:
+        print(f"[Phase Puzzles] WARNING: final checkpoint save failed "
+              f"({type(e).__name__}: {e})")
+    print(f"[Phase Puzzles] Tactics training complete. "
+          f"Steps: {trainer.global_step}")
 
 
 def phase_selfplay(
@@ -772,9 +925,32 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Chess AI Training")
     parser.add_argument(
         "--phase",
-        choices=["pretraining", "selfplay", "distillation", "refinement", "all"],
+        choices=["pretraining", "sf_distill", "puzzles", "selfplay",
+                 "distillation", "refinement", "all"],
         default="all",
-        help="Training phase to run.",
+        help="Training phase to run. sf_distill / puzzles load a buffer "
+             "produced by tools/stockfish_distill.py / lichess_puzzles.py "
+             "and train on it for --sup-epochs passes.",
+    )
+    parser.add_argument(
+        "--sf-buffer",
+        default="replay_buffer/sf_distill.pkl",
+        help="Path to the Stockfish-distillation buffer (default: "
+             "replay_buffer/sf_distill.pkl). Used by --phase=sf_distill.",
+    )
+    parser.add_argument(
+        "--puzzle-buffer",
+        default="replay_buffer/lichess_puzzles.pkl",
+        help="Path to the Lichess-puzzle buffer (default: "
+             "replay_buffer/lichess_puzzles.pkl). Used by --phase=puzzles.",
+    )
+    parser.add_argument(
+        "--sup-epochs",
+        type=int,
+        default=3,
+        help="Epochs over the supervised buffer for sf_distill / puzzles "
+             "phases (default: 3). Each epoch is one full pass over the "
+             "loaded records.",
     )
     parser.add_argument(
         "--resume",
@@ -955,6 +1131,17 @@ def main() -> None:
 
     if phase in ("pretraining", "all"):
         phase_pretraining(**kwargs)
+
+    if phase == "sf_distill":
+        # Standalone supervised phase — does NOT auto-run with "all".
+        # User invokes it explicitly after generating the SF buffer.
+        phase_sf_distill(**kwargs, buffer_path=args.sf_buffer,
+                         epochs=args.sup_epochs)
+
+    if phase == "puzzles":
+        # Standalone supervised phase — does NOT auto-run with "all".
+        phase_puzzles(**kwargs, buffer_path=args.puzzle_buffer,
+                      epochs=args.sup_epochs)
 
     if phase in ("selfplay", "all"):
         phase_selfplay(**kwargs)

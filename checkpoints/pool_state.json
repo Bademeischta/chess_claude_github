@@ -1,0 +1,15 @@
+{
+  "current_id": "net_step0",
+  "step": 0,
+  "pool": [
+    {
+      "path": "checkpoints\\net_step0.pt",
+      "elo": 1000.0,
+      "step": 0,
+      "player_id": "net_step0"
+    }
+  ],
+  "elo_ratings": {
+    "net_step0": 1000.0
+  }
+}

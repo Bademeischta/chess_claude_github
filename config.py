@@ -135,6 +135,15 @@ class ChessAIConfig:
     mcts_sims_critical: int = 256  # Budget when |Q1-Q2| < dca_threshold
     mcts_sims_teacher: int = 256   # Budget for teacher rollout games (was 800)
     mcts_c_puct: float = 2.0       # UCB exploration constant
+
+    # Contempt: penalty (in the [-1,+1] value space) applied to *terminal*
+    # draws inside MCTS. 0.0 = neutral (correct for self-play training).
+    # Set to ~0.10–0.20 in play mode to break queen-shuffle / 3-fold-rep
+    # behaviour that surfaces when the value head is uncertain about
+    # several lines that all evaluate to ~0. Does NOT apply to tablebase
+    # draws (those are objectively drawn — contempt would only confuse
+    # MCTS). For UI play, the web GUI can override this on the fly.
+    mcts_contempt: float = 0.0
     # Self-play stays in the cheap 50-sim fast-bootstrap until this training
     # step (was hard-coded 500 — far too early; the net has barely learned
     # anything by then, so 200/800-sim rollouts just burn time). Keeping the
@@ -299,8 +308,8 @@ class ChessAIConfig:
     stockfish_path: str = "C:/Users/silas/OneDrive/Desktop/ChatKi/chess_ai/tools/stockfish/stockfish/stockfish-windows-x86-64-avx2.exe"
 
     # ── Endgame pretraining ──────────────────────────────────────────────
-    pretrain_positions: int = 3_000_000
-    pretrain_epochs: int = 5
+    pretrain_positions: int = 500_000
+    pretrain_epochs: int = 2
 
     # ── ELO tracking ────────────────────────────────────────────────────
     initial_elo: float = 1000.0

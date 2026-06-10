@@ -472,7 +472,14 @@ class MCTSTree:
         result = get_game_result(board)
         if result != GameResult.ONGOING:
             if result == GameResult.DRAW:
-                value = 0.0
+                # Contempt: when set > 0 (play mode), make terminal draws
+                # look slightly worse than equal so MCTS prefers fighting
+                # lines over shuffle-to-3fold lines. The engine still picks
+                # a draw if every alternative is even worse, but it won't
+                # repeat a queen-shuffle when there's a non-drawn line of
+                # similar value. Keep this at 0.0 during training (configured
+                # in config.py) to avoid biasing the value-head targets.
+                value = -float(getattr(self.cfg, "mcts_contempt", 0.0))
             elif (result == GameResult.WHITE_WIN and board.side_to_move == 0) or \
                  (result == GameResult.BLACK_WIN and board.side_to_move == 1):
                 value = 1.0
@@ -485,6 +492,10 @@ class MCTSTree:
             # probe_tablebase already returns WDL in [0,1] from the side-to-move
             # perspective, so the [0,1] → [-1,1] map is the same for both
             # colours. (The old per-side branch double-flipped Black.)
+            # NOTE: contempt is intentionally NOT applied to tablebase draws —
+            # those are objectively drawn positions, no amount of contempt can
+            # change their truth. Applying it here would just confuse MCTS in
+            # endgames where there is no way to avoid the draw.
             value = 2.0 * tb_val - 1.0
             return value, False
 

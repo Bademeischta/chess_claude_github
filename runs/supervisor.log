@@ -1,0 +1,604 @@
+
+=== supervisor start 2026-06-04T15:02:09.909821 === args=['--phase=all']
+
+=== supervisor start 2026-06-04T15:46:54.495312 === args=['--phase=all']
+[2026-06-04T19:07:37.975730] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=3.35
+  tail:
+  | Current thread 0x0000195c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-04T20:40:07.742718] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=4.89
+  tail:
+  | Current thread 0x00008c50 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+
+=== supervisor start 2026-06-05T00:35:57.113090 === args=['--phase=all']
+[2026-06-05T02:26:43.902900] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=1.85
+  tail:
+  | Current thread 0x00005bf8 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T05:13:43.111734] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=4.63
+  tail:
+  | Current thread 0x00001198 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T08:17:20.863763] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=7.69
+  tail:
+  | Current thread 0x00001c60 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1030 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T11:48:53.810459] CRASH exit=3221225477 restart=4 consecutive=4 uptime_h=11.22
+  tail:
+  | Current thread 0x000067a0 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T14:30:27.984735] CRASH exit=3221225477 restart=5 consecutive=5 uptime_h=13.91
+  tail:
+  | Current thread 0x0000676c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T16:51:59.418370] CRASH exit=3221225477 restart=6 consecutive=6 uptime_h=16.27
+  tail:
+  | Current thread 0x00008788 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1030 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T18:18:56.976221] CRASH exit=3221225477 restart=7 consecutive=7 uptime_h=17.72
+  tail:
+  | Current thread 0x000074b0 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T18:32:51.460683] CRASH exit=3221225477 restart=8 consecutive=8 uptime_h=17.95
+  tail:
+  | Current thread 0x00000540 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 226 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-05T19:00:16.391519] CRASH exit=1073807364 restart=9 consecutive=9 uptime_h=18.41
+  tail:
+  |   [29 standard(sims=128), 3 teacher(sims=256)] | replay=164,852 teacher=80,301
+  |   done: 32 games | +3030 pos | 233.5s | 13 pos/s | ~95 moves/game
+  | [00:19:20]  step= 26,700  loss=1.0071  (p=3.2334 v=0.0000)  ELO=--  H=3.50  lr=9.94e-04  pos/s=13  VRAM=175MB  buf=164,852
+  | [Phase 1] Batch 5 done — +3030 pos | replay=164,852 | train_steps=12 | 13 pos/s | 503 games/hr | step=26707
+  | 
+  | [Phase 1] Batch 6 — generating 32 games (replay buffer: 164,852/5,000)
+  |   [28 standard(sims=128), 4 teacher(sims=256)] | replay=164,852 teacher=80,611
+  |   done: 32 games | +3182 pos | 236.1s | 13 pos/s | ~99 moves/game
+  | [Phase 1] Batch 6 done — +3182 pos | replay=164,852 | train_steps=12 | 13 pos/s | 499 games/hr | step=26719
+  | 
+  | [Phase 1] Batch 7 — generating 32 games (replay buffer: 164,852/5,000)
+  |   [29 standard(sims=128), 3 teacher(sims=256)] | replay=164,852 teacher=81,052
+
+=== supervisor start 2026-06-05T21:05:34.635397 === args=['--phase=all']
+
+=== supervisor start 2026-06-06T00:52:26.669412 === args=['--phase=all']
+[2026-06-06T01:42:10.218171] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=0.83
+  tail:
+  | Current thread 0x0000438c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T06:07:08.078828] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=5.24
+  tail:
+  | Current thread 0x000039f4 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T10:22:45.420163] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=9.51
+  tail:
+  | Current thread 0x00003328 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T10:54:31.359793] CRASH exit=3221225477 restart=4 consecutive=4 uptime_h=10.03
+  tail:
+  | Current thread 0x00005d20 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T11:22:27.586384] CRASH exit=3221225477 restart=5 consecutive=5 uptime_h=10.50
+  tail:
+  | Current thread 0x000026b8 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T12:36:26.778945] CRASH exit=3221225477 restart=6 consecutive=6 uptime_h=11.73
+  tail:
+  | Current thread 0x00002298 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T13:05:16.330614] CRASH exit=3221225477 restart=7 consecutive=7 uptime_h=12.21
+  tail:
+  | Current thread 0x0000882c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1030 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T14:50:14.446917] CRASH exit=3221225477 restart=8 consecutive=8 uptime_h=13.96
+  tail:
+  | Current thread 0x0000846c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T16:05:36.527916] CRASH exit=3221225477 restart=9 consecutive=9 uptime_h=15.22
+  tail:
+  | Current thread 0x000056fc (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-06T19:28:01.518752] CRASH exit=3221225477 restart=10 consecutive=10 uptime_h=18.59
+  tail:
+  | Current thread 0x000072cc (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T01:14:13.647755] CRASH exit=1073807364 restart=11 consecutive=11 uptime_h=24.36
+  tail:
+  | [Phase 1] Batch 88 — generating 32 games (replay buffer: 137,545/5,000)
+  |   [29 standard(sims=128), 3 teacher(sims=256)] | replay=137,545 teacher=174,094
+  |   done: 32 games | +2902 pos | 181.5s | 16 pos/s | ~91 moves/game
+  | [Phase 1] Batch 88 done — +2902 pos | replay=137,545 | train_steps=11 | 14 pos/s | 499 games/hr | step=32224
+  | 
+  | [Phase 1] Batch 89 — generating 32 games (replay buffer: 137,545/5,000)
+  |   [29 standard(sims=128), 3 teacher(sims=256)] | replay=137,545 teacher=174,393
+  |   done: 32 games | +3050 pos | 206.2s | 15 pos/s | ~95 moves/game
+  | [Phase 1] Batch 89 done — +3050 pos | replay=137,545 | train_steps=12 | 14 pos/s | 499 games/hr | step=32236
+  | 
+  | [Phase 1] Batch 90 — generating 32 games (replay buffer: 137,545/5,000)
+  |   [29 standard(sims=128), 3 teacher(sims=256)] | replay=137,545 teacher=174,655
+
+=== supervisor start 2026-06-07T08:04:22.420546 === args=['--phase=all']
+[2026-06-07T08:45:12.202319] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=0.68
+  tail:
+  | Current thread 0x00006748 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1030 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T09:25:39.620171] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=1.35
+  tail:
+  | Current thread 0x000067e0 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T10:37:07.664300] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=2.55
+  tail:
+  | Current thread 0x00002378 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 226 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T13:44:38.120722] CRASH exit=3221225477 restart=4 consecutive=4 uptime_h=5.67
+  tail:
+  | Current thread 0x00007b04 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T14:09:42.108021] user interrupt after 4 restart(s)
+
+=== supervisor start 2026-06-07T16:24:25.844582 === args=['--phase=all']
+[2026-06-07T17:45:06.073001] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=1.34
+  tail:
+  | Current thread 0x00006c9c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1030 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T17:51:28.907472] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=1.45
+  tail:
+  | Current thread 0x00007750 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T18:21:35.319388] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=1.95
+  tail:
+  | Current thread 0x00000f00 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 226 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-07T19:39:05.841482] user interrupt after 3 restart(s)
+
+=== supervisor start 2026-06-07T22:31:43.189654 === args=['--phase=all']
+[2026-06-08T01:02:34.587995] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=2.51
+  tail:
+  | Current thread 0x000067a4 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-08T01:43:14.706934] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=3.19
+  tail:
+  | Current thread 0x000095e4 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-08T04:04:03.835552] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=5.54
+  tail:
+  | Current thread 0x00008938 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1030 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-08T07:39:41.805582] CRASH exit=3221225477 restart=4 consecutive=4 uptime_h=9.13
+  tail:
+  | Current thread 0x00002a24 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 926 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1025 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 471 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 950 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 966 in <module>
+[2026-06-08T09:57:18.680992] user interrupt after 4 restart(s)
+
+=== supervisor start 2026-06-08T19:20:48.360413 === args=['--phase=all']
+[2026-06-08T19:20:50.623768] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-08T23:51:28.700075 === args=['--phase=all']
+[2026-06-08T23:53:32.104314] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-08T23:55:44.944470 === args=['--phase=all']
+[2026-06-09T00:35:00.225138] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=0.65
+  tail:
+  | Current thread 0x00007f94 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1036 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T01:27:27.678012] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=1.53
+  tail:
+  | Current thread 0x00006a14 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1036 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T04:58:46.630270] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=5.05
+  tail:
+  | Current thread 0x00006034 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1036 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 226 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T05:48:27.926105] CRASH exit=3221225477 restart=4 consecutive=4 uptime_h=5.88
+  tail:
+  | Current thread 0x00008dd0 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1036 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T06:50:11.516762] CRASH exit=3221225477 restart=5 consecutive=5 uptime_h=6.91
+  tail:
+  | Current thread 0x00006738 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1036 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T09:22:09.876779] CRASH exit=3221225477 restart=6 consecutive=6 uptime_h=9.44
+  tail:
+  | Current thread 0x00004e24 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1036 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 226 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T11:15:04.215553] CRASH exit=3221225477 restart=7 consecutive=7 uptime_h=11.32
+  tail:
+  | Current thread 0x000036ec (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1036 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T12:36:15.912202] CRASH exit=3221225477 restart=8 consecutive=8 uptime_h=12.68
+  tail:
+  | Current thread 0x00001868 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\board.py", line 101 in legal_moves
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\engine\rules.py", line 45 in get_game_result
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 472 in _resolve_non_nn
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 254 in select_leaf_only
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 937 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1041 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 192 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 212 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 486 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 965 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 981 in <module>
+[2026-06-09T13:43:35.646009] user interrupt after 8 restart(s)
+
+=== supervisor start 2026-06-10T10:59:07.512062 === args=['--phase=all']
