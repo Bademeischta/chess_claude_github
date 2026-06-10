@@ -8,16 +8,25 @@ build/
 dist/
 *.egg-info/
 
-# Model checkpoints (large binary files)
-checkpoints/
+# Model checkpoints — tracked via Git LFS for specific files
+# checkpoints/ dir is NOT ignored so file-level negations work
+checkpoints/*.pt
+checkpoints/*.ckpt
 *.pt
 *.ckpt
 
+# Allow specific checkpoint files needed to resume / inspect training
+!checkpoints/latest.pt
+!checkpoints/step_0063400.pt
+!checkpoints/net_step0.pt
+!checkpoints/net_step35000.pt
+
 # Training artifacts
-runs/
+# runs/ is included (TensorBoard logs + supervisor.log)
 replay_buffer/
 *.replay
 *.log
+!runs/*.log
 
 # Environments
 venv/

@@ -90,6 +90,20 @@ class GameSession:
         self.dynamic_max:  int = 6000
         self.ponder_on:    bool = True
         self.temperature:  float = 0.05        # near-greedy for real play
+        # Contempt: breaks queen-shuffle / 3-fold-rep mid-game patterns
+        # where the value head can't tell several lines apart and MCTS
+        # converges on "no progress" repetition. 0.10 means terminal draws
+        # are treated as if they were small losses, pushing MCTS toward
+        # fighting lines whenever any non-drawn alternative exists. Does
+        # NOT affect tablebase draws (those are genuinely drawn and the
+        # engine respects them). Pushed into the *shared* cfg below — only
+        # this web-UI process reads it; the training process has its own
+        # cfg with mcts_contempt=0.0.
+        self.contempt:     float = 0.10
+        try:
+            self.cfg.mcts_contempt = self.contempt  # type: ignore[attr-defined]
+        except Exception:
+            pass  # legacy cfg without the field — MCTS getattr fallback covers us
 
         # Ponder thread (runs MCTS on the current root while it's your turn).
         self._ponder_thread: Optional[threading.Thread] = None
@@ -157,6 +171,7 @@ class GameSession:
             "dynamic_max":  self.dynamic_max,
             "ponder_on":    self.ponder_on,
             "temperature":  self.temperature,
+            "contempt":     self.contempt,
             "human_white":  self.human_white,
         }
 
@@ -173,6 +188,11 @@ class GameSession:
                                     min(20_000, int(data.get("dynamic_max", self.dynamic_max))))
             self.ponder_on    = bool(data.get("ponder_on", self.ponder_on))
             self.temperature  = max(0.001, min(2.0, float(data.get("temperature", self.temperature))))
+            self.contempt     = max(0.0,   min(0.5, float(data.get("contempt",    self.contempt))))
+            try:
+                self.cfg.mcts_contempt = self.contempt  # type: ignore[attr-defined]
+            except Exception:
+                pass
         # If user just turned ponder on/off, react now.
         if self.ponder_on and not self.game_over and self._is_human_turn():
             self._start_ponder()
@@ -1245,6 +1265,12 @@ PAGE = r"""<!doctype html>
         <input type="range" id="temperature" min="0.001" max="1" step="0.001" value="0.05"
                oninput="document.getElementById('tempLbl').textContent=parseFloat(this.value).toFixed(3);settingChanged()">
       </label>
+
+      <label class="field" style="margin-bottom:4px">
+        <span>Contempt: <span id="contemptLbl">0.10</span> (anti-draw bias — higher = fights harder, avoids shuffle-to-3fold)</span>
+        <input type="range" id="contempt" min="0" max="0.30" step="0.01" value="0.10"
+               oninput="document.getElementById('contemptLbl').textContent=parseFloat(this.value).toFixed(2);settingChanged()">
+      </label>
     </div>
 
     <div class="status">
@@ -1738,6 +1764,7 @@ function pushSettings(){
     dynamic_max:  parseInt(document.getElementById('dynMax').value),
     ponder_on:    document.getElementById('ponderOn').checked,
     temperature:  parseFloat(document.getElementById('temperature').value),
+    contempt:     parseFloat(document.getElementById('contempt').value),
   });
 }
 function applySettings(s){
@@ -1752,6 +1779,10 @@ function applySettings(s){
   document.getElementById('ponderOn').checked = s.ponder_on;
   document.getElementById('temperature').value = s.temperature;
   document.getElementById('tempLbl').textContent = parseFloat(s.temperature).toFixed(3);
+  if (s.contempt !== undefined) {
+    document.getElementById('contempt').value = s.contempt;
+    document.getElementById('contemptLbl').textContent = parseFloat(s.contempt).toFixed(2);
+  }
   document.getElementById('sims-row').style.display = (s.think_mode==='sims') ? 'grid' : 'none';
   document.getElementById('time-row').style.display = (s.think_mode==='time') ? 'grid' : 'none';
   document.getElementById('dyn-row').style.display  = (s.think_mode==='dynamic') ? 'grid' : 'none';
