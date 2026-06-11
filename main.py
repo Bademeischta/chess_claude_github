@@ -45,9 +45,12 @@ if str(_root) not in sys.path:
 # Allocator config MUST be set before torch initialises CUDA — previously
 # this happened in initialise_system() AFTER run_probe() had already touched
 # CUDA, making it a no-op (audit P11-2). setdefault so a user override wins.
+# expandable_segments is not supported by the Windows allocator (PyTorch
+# warns and ignores it), so only request it elsewhere.
 os.environ.setdefault(
     "PYTORCH_CUDA_ALLOC_CONF",
-    "max_split_size_mb:256,expandable_segments:True",
+    "max_split_size_mb:256" if sys.platform == "win32"
+    else "max_split_size_mb:256,expandable_segments:True",
 )
 
 import torch

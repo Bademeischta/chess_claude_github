@@ -653,13 +653,21 @@ class Trainer:
                     pickle.dump(obj, f, protocol=4)
                 tmp.replace(path)  # atomic on POSIX, best-effort on Windows
 
+            # Per-slot EFFECTIVE priorities = the SumTree leaves (they already
+            # include the draw multiplier). NOTE: this function was originally
+            # written for the legacy flat-`_priorities` buffer and silently
+            # failed with AttributeError on the SumTree-based PER buffer.
+            rb = self.replay_buffer
+            cap = rb.tree.capacity
+            leaf_prios = rb.tree.tree[cap - 1: cap - 1 + cap].copy()
             replay_state = {
-                "data":       self.replay_buffer._data,
-                "priorities": self.replay_buffer._priorities,
-                "ptr":        self.replay_buffer._ptr,
-                "size":       self.replay_buffer._size,
-                "step":       self.replay_buffer._step,
-                "max_prio":   self.replay_buffer._max_prio,
+                "data":       rb._data,
+                "priorities": leaf_prios,
+                "prio_mult":  rb._prio_mult.copy(),
+                "ptr":        rb._ptr,
+                "size":       rb._size,
+                "step":       rb._step,
+                "max_prio":   rb._max_prio,
             }
             _dump(replay_state, ckpt_dir / "replay.pkl.gz")
 
@@ -696,29 +704,40 @@ class Trainer:
                 # them outright, otherwise `_ptr % capacity` walks past
                 # the loaded list's end and IndexError's on the next add().
                 import numpy as _np
-                cap   = self.replay_buffer.capacity
+                rb    = self.replay_buffer
+                cap   = rb.capacity
                 d     = list(state["data"])
-                p     = state["priorities"]
+                p     = _np.asarray(state["priorities"], dtype=_np.float64)
+                m     = _np.asarray(state.get("prio_mult",
+                                              _np.ones(len(d))),
+                                    dtype=_np.float32)
                 old_n = len(d)
                 if old_n < cap:
                     # Pad with None / 0.0 so indices in [old_n, cap) are valid.
                     d.extend([None] * (cap - old_n))
-                    p_full = _np.zeros(cap, dtype=_np.float32)
-                    p_full[:old_n] = p
-                    p = p_full
+                    p = _np.concatenate([p, _np.zeros(cap - old_n)])
+                    m = _np.concatenate([m, _np.ones(cap - old_n,
+                                                     dtype=_np.float32)])
                 elif old_n > cap:
                     # New buffer is smaller — keep the most recent `cap`
                     # entries (the ring buffer's tail) and reset _ptr.
-                    keep_from = old_n - cap
-                    d = d[keep_from:]
-                    p = p[keep_from:]
-                self.replay_buffer._data       = d
-                self.replay_buffer._priorities = p
+                    d = d[old_n - cap:]
+                    p = p[old_n - cap:]
+                    m = m[old_n - cap:]
+                rb._data      = d
+                rb._prio_mult = m
+                # Rebuild the SumTree from the flat leaf priorities: set the
+                # leaves, then recompute internal sums bottom-up (O(2N)).
+                t = rb.tree
+                t.tree[:] = 0.0
+                t.tree[t.capacity - 1: t.capacity - 1 + cap] = p[:cap]
+                for i in range(t.capacity - 2, -1, -1):
+                    t.tree[i] = t.tree[2 * i + 1] + t.tree[2 * i + 2]
                 # Clamp restored bookkeeping to the new capacity.
-                self.replay_buffer._size = min(int(state["size"]), cap)
-                self.replay_buffer._ptr  = int(state["ptr"]) % cap
-                self.replay_buffer._step       = state["step"]
-                self.replay_buffer._max_prio   = state["max_prio"]
+                rb._size = min(int(state["size"]), cap)
+                rb._ptr  = int(state["ptr"]) % cap
+                rb._step     = state["step"]
+                rb._max_prio = state["max_prio"]
                 if old_n != cap:
                     print(f"[Trainer] Replay buffer capacity changed "
                           f"({old_n:,} → {cap:,}); resized snapshot.")
