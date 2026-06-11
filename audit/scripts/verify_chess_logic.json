@@ -1,0 +1,127 @@
+{
+  "backend": {
+    "ok": true,
+    "result": {
+      "cpp": true,
+      "has_stale_counter": true
+    },
+    "secs": 0.0
+  },
+  "startpos_20_moves": {
+    "ok": true,
+    "result": 20,
+    "secs": 2.32
+  },
+  "perft_suite": {
+    "ok": true,
+    "result": "all standard positions pass",
+    "secs": 0.03
+  },
+  "parity_200_games": {
+    "ok": true,
+    "result": "200 random games x 60 plies match python-chess",
+    "secs": 1.7
+  },
+  "tensor_determinism": {
+    "ok": true,
+    "result": "identical tensors across constructions",
+    "secs": 0.0
+  },
+  "encoding_bijectivity_random_games": {
+    "ok": true,
+    "result": "2427 positions verified, no collisions, decode==encode",
+    "secs": 0.33
+  },
+  "underpromotion_encoding_both_colors": {
+    "ok": true,
+    "result": "24 promotion encodings bijective incl. underpromos both colors",
+    "secs": 0.0
+  },
+  "pinned_ep_gate_P1_1": {
+    "ok": true,
+    "result": {
+      "cpp_ep_square": -1,
+      "pychess_fen_ep_field": "-",
+      "ep_capture_legal_pychess": false,
+      "cpp_ep_capture_moves": [],
+      "divergence": false
+    },
+    "secs": 0.0
+  },
+  "plane20_parity_bug_P1_2": {
+    "ok": true,
+    "result": {
+      "after4_repeat_of_startpos_marker": 1.0,
+      "after5_repeat_of_Nf3pos_marker": 1.0,
+      "bug_confirmed": false
+    },
+    "secs": 0.0
+  },
+  "threefold_detection_cpp": {
+    "ok": true,
+    "result": "threefold + draw result detected",
+    "secs": 0.0
+  },
+  "fifty_move_and_insufficient": {
+    "ok": true,
+    "result": "50-move tick + insufficient-material verdicts correct",
+    "secs": 0.0
+  },
+  "checkmate_stalemate_terminals": {
+    "ok": true,
+    "result": "fools-mate -> BLACK_WIN; stalemate -> DRAW",
+    "secs": 0.0
+  },
+  "apply_move0_sentinel_P1_5": {
+    "ok": true,
+    "result": {
+      "rook_on_a1": {
+        "side_flipped": 1,
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b Kkq - 1 1",
+        "stale_count": 0
+      },
+      "stale_count_empty_a1": 1
+    },
+    "secs": 0.0
+  },
+  "fallback_hash_attr_P1_6": {
+    "ok": true,
+    "result": {
+      "returncode": 1,
+      "stdout": "",
+      "stderr_tail": "AttributeError: 'Board' object has no attribute 'zobrist_hash'"
+    },
+    "secs": 0.23
+  },
+  "ep_unconditional_vs_gated_pyd_currency_T0_1": {
+    "ok": true,
+    "result": {
+      "ep_after_lone_e4": -1,
+      "gated_build": true,
+      "has_stale_counter_binding": true,
+      "pyd_mtime": "2026-06-11 08:00"
+    },
+    "secs": 0.0
+  },
+  "movegen_benchmark": {
+    "ok": true,
+    "result": {
+      "startpos": {
+        "legal_moves": 20,
+        "legal_moves_calls_per_s": 594485,
+        "us_per_call": 1.7
+      },
+      "middlegame": {
+        "legal_moves": 49,
+        "legal_moves_calls_per_s": 243364,
+        "us_per_call": 4.1
+      },
+      "perft4": {
+        "nodes": 197281,
+        "secs": 0.013,
+        "nodes_per_s": 15537118
+      }
+    },
+    "secs": 2.01
+  }
+}

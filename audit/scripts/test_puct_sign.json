@@ -1,0 +1,51 @@
+{
+  "fen": "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1",
+  "root_N": 300,
+  "root_Q_stm_persp": 0.937,
+  "mate_move": {
+    "move": "a1a8",
+    "N": 281,
+    "Q_child_persp": -1.0,
+    "P": 0.05
+  },
+  "most_visited": {
+    "move": "a1a8",
+    "N": 281,
+    "Q_child_persp": -1.0,
+    "P": 0.05
+  },
+  "greedy_selection": "a1a8",
+  "top5": [
+    {
+      "move": "a1a8",
+      "N": 281,
+      "Q_child_persp": -1.0,
+      "P": 0.05
+    },
+    {
+      "move": "g1h1",
+      "N": 1,
+      "Q_child_persp": 0.0,
+      "P": 0.05
+    },
+    {
+      "move": "g1f1",
+      "N": 1,
+      "Q_child_persp": 0.0,
+      "P": 0.05
+    },
+    {
+      "move": "a1a7",
+      "N": 1,
+      "Q_child_persp": 0.0,
+      "P": 0.05
+    },
+    {
+      "move": "a1a6",
+      "N": 1,
+      "Q_child_persp": 0.0,
+      "P": 0.05
+    }
+  ],
+  "verdict_inverted": false
+}

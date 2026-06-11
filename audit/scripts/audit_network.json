@@ -1,0 +1,117 @@
+{
+  "hw_derived_config": {
+    "device": "cuda",
+    "precision": "bf16",
+    "torch_compile": false,
+    "batch_size": 1024,
+    "parallel_games": 32,
+    "dataloader_workers": 5,
+    "replay_buffer_cap": 190585,
+    "pin_memory": true
+  },
+  "latest_checkpoint": "C:\\Users\\silas\\OneDrive\\Desktop\\ChatKi\\chess_ai\\checkpoints\\step_0063400.pt",
+  "effective_arch": {
+    "num_res_blocks": 10,
+    "num_channels": 256,
+    "policy_mid_channels": 2,
+    "material_scale": 12.0,
+    "gru": [
+      256,
+      2,
+      8
+    ]
+  },
+  "checkpoint": {
+    "step": 63400,
+    "keys": [
+      "alpha_v_global",
+      "dirichlet_eps",
+      "entropy_history",
+      "model",
+      "optimizer",
+      "replay_step",
+      "scaler",
+      "scheduler",
+      "step"
+    ],
+    "model_param_count": 14209947,
+    "model_dtype_histogram": {
+      "torch.float32": 1690888,
+      "torch.bfloat16": 12519059
+    },
+    "optimizer_state_dtype_histogram": {
+      "step:torch.float32": 98,
+      "exp_avg:torch.bfloat16": 12519058,
+      "exp_avg_sq:torch.bfloat16": 12519058,
+      "exp_avg:torch.float32": 1690888,
+      "exp_avg_sq:torch.float32": 1690888
+    },
+    "dirichlet_eps": 0.1,
+    "alpha_v_global": 2.0,
+    "replay_step": 35670,
+    "has_rng_states": false,
+    "scheduler_last_epoch": 63400,
+    "file_mb": 95.5
+  },
+  "live_model": {
+    "total_params": 14209946,
+    "by_component": {
+      "gru_encoder": 1690888,
+      "input_proj": 58112,
+      "blocks": 11840064,
+      "policy_head": 603206,
+      "value_head": 17676
+    },
+    "param_dtype_histogram": {
+      "torch.float32": 1690888,
+      "torch.bfloat16": 12519058
+    },
+    "fp32_size_mb": 56.8
+  },
+  "init_behavior": {
+    "wdl_at_init": [
+      0.2412,
+      0.3086,
+      0.4512
+    ],
+    "q_at_init": -0.21,
+    "policy_logit_std": 0.1525,
+    "policy_logit_absmax": 0.5703
+  },
+  "consistency": {
+    "batch1_vs_batchN_policy_maxdiff": 0.0087890625,
+    "train_vs_eval_policy_maxdiff": 0.0
+  },
+  "grad_flow": {
+    "params_without_grad": [],
+    "params_with_zero_grad": [
+      "gru_encoder.gru.weight_ih_l0",
+      "value_head.piece_values"
+    ],
+    "n_zero_grad": 2
+  },
+  "aux_loss_gradient_reaches": [],
+  "onecycle_clobbering_P5_1": {
+    "group_lrs_as_constructed": [
+      0.001,
+      0.0005,
+      0.0003
+    ],
+    "after_scheduler_init": [
+      3.9999999999999996e-05,
+      3.9999999999999996e-05,
+      3.9999999999999996e-05
+    ],
+    "after_2_steps": [
+      4.0002371073586925e-05,
+      4.0002371073586925e-05,
+      4.0002371073586925e-05
+    ],
+    "multipliers_survive": false
+  },
+  "vram_train_shape": {
+    "batch": 1024,
+    "peak_alloc_gb": 2.63,
+    "peak_reserved_gb": 2.8
+  }
+}

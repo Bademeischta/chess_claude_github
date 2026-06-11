@@ -1,0 +1,90 @@
+{
+  "config": {
+    "batch_size": 1024,
+    "parallel_games": 32,
+    "sims": 50,
+    "precision": "bf16",
+    "policy_mid_channels": 32,
+    "num_res_blocks": 10
+  },
+  "selfplay_window": {
+    "games": 224,
+    "positions": 25895,
+    "secs": 365.5,
+    "positions_per_s": 70.8,
+    "positions_per_hour": 255022,
+    "games_per_hour": 2206,
+    "avg_positions_per_game": 115.6,
+    "stale_moves": 0,
+    "label_histogram": {
+      "win(1.0)": 4230,
+      "draw(0.5)": 14720,
+      "loss(0.0)": 4176
+    }
+  },
+  "training_1000": {
+    "loss_at": {
+      "1": 17.4337,
+      "100": 6.3492,
+      "500": 1.6005,
+      "1000": 1.4955
+    },
+    "nan_steps": 0,
+    "median_step_ms": 221.1,
+    "steps_per_hour": 16280,
+    "grad_norm_samples": [
+      5.0,
+      3.69,
+      3.05,
+      2.8
+    ],
+    "policy_value_aux_at_end": {
+      "loss/total": 1.6038
+    },
+    "param_group_lrs_after_run": [
+      0.0005211315380768219,
+      0.00026056576903841095,
+      0.00015633946142304658
+    ],
+    "post100_losses_original": [
+      5.49036,
+      5.71626,
+      6.09502,
+      6.64934,
+      5.60547,
+      7.12061,
+      6.24869,
+      6.36552,
+      5.88473,
+      5.59468
+    ]
+  },
+  "resume_test": {
+    "original_steps_101_110": [
+      5.49036,
+      5.71626,
+      6.09502,
+      6.64934,
+      5.60547,
+      7.12061,
+      6.24869,
+      6.36552,
+      5.88473,
+      5.59468
+    ],
+    "resumed_steps_101_110": [
+      5.75527,
+      5.34888,
+      5.68811,
+      5.38754,
+      5.45317,
+      5.17973,
+      5.08788,
+      5.27134,
+      5.67409,
+      5.70679
+    ],
+    "identical": false,
+    "note": "checkpoint stores no RNG states; PER sampling uses np.random -> exact reproduction not expected; magnitudes should match"
+  }
+}
