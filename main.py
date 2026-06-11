@@ -42,6 +42,14 @@ _root = Path(__file__).resolve().parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
+# Allocator config MUST be set before torch initialises CUDA — previously
+# this happened in initialise_system() AFTER run_probe() had already touched
+# CUDA, making it a no-op (audit P11-2). setdefault so a user override wins.
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "max_split_size_mb:256,expandable_segments:True",
+)
+
 import torch
 import numpy as np
 
@@ -138,6 +146,17 @@ def initialise_system(args) -> torch.device:
     derived = run_probe(write=False)
     update_config_from_dict(derived)
 
+    # Reproducibility (audit P8-1): CONFIG.seed != 0 seeds every RNG the
+    # pipeline uses. Checkpoints additionally store/restore RNG states.
+    if getattr(CONFIG, "seed", 0):
+        import random as _random
+        torch.manual_seed(CONFIG.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(CONFIG.seed)
+        np.random.seed(CONFIG.seed)
+        _random.seed(CONFIG.seed)
+        print(f"[main] All RNGs seeded with {CONFIG.seed}")
+
     # CUDA setup
     device = torch.device(CONFIG.device)
     if device.type == "cuda":
@@ -167,15 +186,8 @@ def initialise_system(args) -> torch.device:
         except AttributeError:
             pass  # PyTorch < 2.0
 
-    # Allocator: expandable segments cut VRAM fragmentation in long runs
-    # (a 4-day training session can otherwise OOM on a 12 GB card just from
-    # heap fragmentation, with plenty of total free VRAM). max_split_size
-    # keeps the allocator from holding back tiny fragments. setdefault so a
-    # user-provided override wins.
-    os.environ.setdefault(
-        "PYTORCH_CUDA_ALLOC_CONF",
-        "max_split_size_mb:256,expandable_segments:True",
-    )
+    # (PYTORCH_CUDA_ALLOC_CONF is set at module import time, before torch —
+    # setting it here was too late: CUDA was already initialised; audit P11-2.)
 
     # Tablebases — auto-detect a project-local ./syzygy/ folder if no path
     # has been configured. This makes the AI play perfectly in all ≤5-piece
@@ -250,16 +262,22 @@ def run_tests(device: torch.device) -> bool:
         assert ok, "C++ engine diverges from python-chess — see log above"
     test("C++/python-chess parity", test_parity)
 
-    # 3. MCTS mate-in-1 (20 sims — enough for a trivial mate, fast on Python backend)
+    # 3. MCTS mate-in-1 — must FIND the mate, not merely return some move.
+    # (The old assertion `move != 0` passed throughout the era of the PUCT
+    # perspective bug that made the search avoid winning moves; audit P3-5.)
     def test_mcts_mate():
         model = build_model(CONFIG, compile_model=False).eval()
         from mcts.tree import MCTSTree
         from engine.board import Board
-        fen = "1r3rk1/5ppp/p1Rp4/8/8/1P6/P4PPP/4R1K1 w - - 0 1"
+        from engine.movegen import _move_uci
+        fen = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"   # Ra8# (back rank)
         board = Board.from_fen(fen)
         tree  = MCTSTree(CONFIG, model, device)
-        move, _ = tree.search(board, 20, temperature=0.01, use_dca=False)
-        assert move != 0, "MCTS returned null move for mate-in-1 position"
+        move, _ = tree.search(board, 100, temperature=0.0, use_dca=False,
+                              add_noise=False)
+        assert _move_uci(move) == "a1a8", (
+            f"MCTS failed to find mate-in-1 (chose {_move_uci(move)}) — "
+            f"check PUCT child-Q perspective (audit P3-5)")
     test("MCTS mate-in-1", test_mcts_mate)
 
     # 4. Forward pass without OOM
@@ -271,7 +289,11 @@ def run_tests(device: torch.device) -> bool:
         board   = torch.randn(B, CONFIG.input_planes, 8, 8, device=device, dtype=dtype)
         history = torch.randn(B, CONFIG.gru_history_len, CONFIG.input_planes, 8, 8,
                                device=device, dtype=dtype)
-        with torch.no_grad():
+        # Master weights are fp32 (audit P2-3); compute runs under autocast —
+        # mirror the trainer's forward exactly.
+        with torch.no_grad(), torch.autocast(
+                device_type=device.type, dtype=dtype,
+                enabled=(dtype != torch.float32 and device.type == "cuda")):
             pol, wdl, aux = model(board, history)
         assert pol.shape == (B, CONFIG.num_actions), f"Policy shape wrong: {pol.shape}"
         assert wdl.shape == (B, 3),                  f"WDL shape wrong: {wdl.shape}"
@@ -406,6 +428,43 @@ def warmup_model(model, cfg, device: torch.device) -> None:
         print(f"[main] Neural network ready ({elapsed:.1f}s).\n", flush=True)
 
 
+def _interval_crossed(gates: dict, key: str, step: int, every: int) -> bool:
+    """
+    True when `step` has entered a new `every`-sized interval since the last
+    True for `key`. Replaces `step % every == 0` gating: global_step advances
+    in chunks of 10-25 per batch, so exact-multiple checks virtually never
+    fired — the arena/ELO/pool subsystem never ran in 63k steps (audit P5-6).
+    """
+    if every <= 0:
+        return False
+    last = gates.get(key, 0)
+    if step // every > last // every:
+        gates[key] = step
+        return True
+    return False
+
+
+def _run_arena_and_update(trainer, model, pool, logger) -> None:
+    """One arena match vs the strongest pool member + honest ELO updates."""
+    opp_path = pool.best_opponent_path()
+    opp_id   = pool.best_opponent_id()
+    if not opp_path or not opp_id:
+        return
+    opp_model = pool.load_model_from_path(model, opp_path, trainer.device)
+    wins, draws, losses = trainer.run_arena(model, opp_model, 100)
+    elo_diff, lo, hi = ELOSystem.elo_difference_ci(wins, draws, losses)
+    # Rate against the REAL pool entry (the old code updated a phantom
+    # player literally named "best_pool"; audit P7-1c).
+    new_elo, _ = pool.update_elo(
+        pool._current_id, opp_id, wins, draws, losses, trainer.global_step
+    )
+    logger.log_elo(new_elo, pool.best_pool_elo(), trainer.global_step)
+    pool.save_state()
+    print(f"[Arena] Step {trainer.global_step}: W{wins}/D{draws}/L{losses}  "
+          f"ELO diff={elo_diff:+.0f} (CI {lo:+.0f}..{hi:+.0f})  "
+          f"new_ELO={new_elo:.0f}")
+
+
 def _train_steps_for(n_new: int, cfg, floor: int) -> int:
     """
     Number of gradient steps to run after a self-play batch.
@@ -427,6 +486,17 @@ def phase_pretraining(
     """Phase 0: Endgame pretraining from Syzygy tablebases."""
     print("\n[Phase 0] Endgame Pretraining")
     print("─" * 40)
+
+    # Run-once marker: --phase=all is re-entered by the crash supervisor on
+    # every restart; without this, each restart re-generated up to 500k
+    # Syzygy positions into the ring buffer, EVICTING all accumulated
+    # self-play data, and burned ~1k steps re-training on endgames only
+    # (audit finding P11-1). Delete the marker file to force a re-run.
+    marker = Path(CONFIG.checkpoint_dir) / ".pretraining_done"
+    if marker.exists():
+        print(f"[Phase 0] Already completed ({marker}) — skipping. "
+              f"Delete the marker to re-run.")
+        return
 
     if not CONFIG.syzygy_path:
         print("[Phase 0] No SYZYGY_PATH set — skipping pretraining.")
@@ -459,6 +529,11 @@ def phase_pretraining(
     except Exception as e:
         print(f"[Phase 0] WARNING: final checkpoint save failed "
               f"({type(e).__name__}: {e})")
+    try:
+        marker.write_text(f"completed at step {trainer.global_step}\n",
+                          encoding="utf-8")
+    except OSError as e:
+        print(f"[Phase 0] WARNING: could not write marker ({e})")
     print(f"[Phase 0] Pretraining complete. Steps: {trainer.global_step}")
 
 
@@ -618,6 +693,7 @@ def phase_selfplay(
 
     games = 0
     t0 = time.time()
+    gates: dict = {"arena": trainer.global_step, "register": trainer.global_step}
 
     while games < max_games:
         # Ramp sims back up once the model has seen real training signal
@@ -659,24 +735,14 @@ def phase_selfplay(
         if _emerg_n > 0 and batch_num % _emerg_n == 0:
             trainer.emergency_save()
 
-        # Arena evaluation
-        if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
-            opp_path = pool.best_opponent_path()
-            if opp_path:
-                opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 100)
-                elo_diff, _, _ = ELOSystem.elo_difference_ci(wins, draws, losses)
-                new_elo, _ = pool.update_elo(
-                    pool._current_id, "best_pool",
-                    wins, draws, losses, trainer.global_step
-                )
-                logger.log_elo(new_elo, pool.best_pool_elo(), trainer.global_step)
-                print(f"[Arena] Step {trainer.global_step}: "
-                      f"W{wins}/D{draws}/L{losses}  "
-                      f"ELO diff={elo_diff:+.0f}  new_ELO={new_elo:.0f}")
+        # Arena evaluation (interval-crossing gate — audit P5-6)
+        if _interval_crossed(gates, "arena", trainer.global_step,
+                             CONFIG.arena_every_n_steps) and pool._pool:
+            _run_arena_and_update(trainer, model, pool, logger)
 
         # Register checkpoint in pool
-        if trainer.global_step % (CONFIG.arena_every_n_steps // 2) == 0:
+        if _interval_crossed(gates, "register", trainer.global_step,
+                             CONFIG.arena_every_n_steps // 2):
             pool.register_current(model, trainer.global_step)
 
         logger.log_throughput(pos_s, g_hr, trainer.global_step)
@@ -702,6 +768,7 @@ def phase_distillation(
 
     games = 0
     batch_num = 0
+    gates: dict = {"arena": trainer.global_step}
     _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
         batch_num += 1
@@ -717,18 +784,9 @@ def phase_distillation(
         if _emerg_n > 0 and batch_num % _emerg_n == 0:
             trainer.emergency_save()
 
-        if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
-            opp_path = pool.best_opponent_path()
-            if opp_path:
-                opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 100)
-                new_elo, _ = pool.update_elo(
-                    pool._current_id, "best_pool",
-                    wins, draws, losses, trainer.global_step
-                )
-                logger.log_elo(new_elo, pool.best_pool_elo(), trainer.global_step)
-                print(f"[Arena] Step {trainer.global_step}: "
-                      f"W{wins}/D{draws}/L{losses}  ELO={new_elo:.0f}")
+        if _interval_crossed(gates, "arena", trainer.global_step,
+                             CONFIG.arena_every_n_steps) and pool._pool:
+            _run_arena_and_update(trainer, model, pool, logger)
 
         if pool.current_elo() >= target_elo:
             print(f"[Phase 2] ELO target {target_elo:.0f} reached!")
@@ -750,12 +808,19 @@ def phase_refinement(
     CONFIG.teacher_game_ratio  = 0.20
     CONFIG.teacher_batch_ratio = 0.35
 
-    # Lower LR for refinement (one-time, on the shared trainer/optimizer)
+    # Lower LR for refinement (one-time, on the shared trainer/optimizer).
+    # Scaling only pg["lr"] was a no-op: OneCycleLR recomputes lr from its
+    # per-group schedule anchors on every step and overwrote the cut within
+    # one batch (audit P5-2). Scale the anchors too so the whole remaining
+    # schedule shifts down by 10x.
     for pg in trainer.optimizer.param_groups:
-        pg["lr"] *= 0.1
+        for k in ("lr", "max_lr", "initial_lr", "min_lr"):
+            if k in pg:
+                pg[k] *= 0.1
 
     games = 0
     batch_num = 0
+    gates: dict = {"arena": trainer.global_step}
     _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
         batch_num += 1
@@ -771,16 +836,9 @@ def phase_refinement(
         if _emerg_n > 0 and batch_num % _emerg_n == 0:
             trainer.emergency_save()
 
-        if trainer.global_step % CONFIG.arena_every_n_steps == 0 and pool._pool:
-            opp_path = pool.best_opponent_path()
-            if opp_path:
-                opp_model = pool.load_model_from_path(model, opp_path, device)
-                wins, draws, losses = trainer.run_arena(model, opp_model, 100)
-                new_elo, _ = pool.update_elo(
-                    pool._current_id, "best_pool",
-                    wins, draws, losses, trainer.global_step
-                )
-                logger.log_elo(new_elo, pool.best_pool_elo(), trainer.global_step)
+        if _interval_crossed(gates, "arena", trainer.global_step,
+                             CONFIG.arena_every_n_steps) and pool._pool:
+            _run_arena_and_update(trainer, model, pool, logger)
 
         if pool.current_elo() >= target_elo:
             print(f"[Phase 3] ELO target {target_elo:.0f} reached!")
@@ -1078,7 +1136,14 @@ def main() -> None:
         initial_elo    = CONFIG.initial_elo,
     )
     pool.load_state()
-    pool.register_current(model, step=0, elo=CONFIG.initial_elo)
+    # Register the random-init baseline exactly ONCE (first-ever run).
+    # Unconditional registration overwrote net_step0.pt with the CURRENT
+    # weights on every process start — including `--test` runs and
+    # supervisor crash-restarts — so the pool's reference opponent was
+    # silently replaced by the newest net (audit P7-1b). Never register
+    # from --test: the integration tests must not mutate the pool.
+    if not args.test and not pool._pool:
+        pool.register_current(model, step=0, elo=CONFIG.initial_elo)
 
     logger = TrainingLogger(
         log_dir  = CONFIG.tensorboard_dir,

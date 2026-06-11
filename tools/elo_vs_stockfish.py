@@ -143,15 +143,17 @@ def main() -> int:
         print(f"[elo] Could not set SF Hash/Threads ({e}); using defaults.")
 
     # Fair-play time budget: if --movetime is not given, match Stockfish's
-    # think time to our MCTS budget. Rough calibration on RTX 5070 with the
-    # 14M-param net: ~25 ms / sim (mostly NN forward). Avoids the historic
-    # 100 ms-vs-multi-second asymmetry that systematically over-scored us.
+    # think time to our MCTS budget. MEASURED calibration on RTX 5070 with
+    # the 14M-param net + CUDA-graph batched leaves: ~0.125 ms/sim (16 ms
+    # per 128-sim move; audit/scripts/bench_mcts.json). The previous
+    # 25 ms/sim figure granted Stockfish ~200x our actual wall clock and
+    # made every estimate strongly pessimistic (audit P7-2). Floor of
+    # 50 ms keeps SF's fixed move overhead from dominating.
     if args.movetime is None and args.depth is None:
-        args.movetime = max(0.5, sims_estimate := (
-            (args.sims if args.sims is not None else CONFIG.mcts_sims) * 0.025
-        ))
-        print(f"[elo] Auto movetime: {args.movetime:.2f}s "
-              f"(matches our MCTS sims ≈ {sims_estimate / 0.025:.0f}).")
+        n_sims_used = args.sims if args.sims is not None else CONFIG.mcts_sims
+        args.movetime = max(0.05, n_sims_used * 0.000125)
+        print(f"[elo] Auto movetime: {args.movetime:.3f}s "
+              f"(~matches our wall clock for {n_sims_used} sims).")
 
     def _sf_limit() -> chess.engine.Limit:
         if args.depth is not None:
@@ -179,6 +181,24 @@ def main() -> int:
                       f"(SF floor is 1320 — use --sf-skill 0-20 for weaker "
                       f"opponents). Using default strength.")
 
+    def _our_move(tree: MCTSTree, sims_budget: int) -> int:
+        """Run `sims_budget` simulations on the CURRENT tree root and return
+        the most-visited move (greedy, no exploration noise).
+
+        AUDIT NOTE (P7-2): --auto previously *referenced* `_our_move` without
+        any definition — the adaptive ELO search crashed with NameError on
+        its first own move, so auto-ELO never produced a result.
+        """
+        done = tree.run_batched_sims(sims_budget,
+                                     batch_size=CONFIG.parallel_games)
+        if done == 0:
+            for _ in range(sims_budget):
+                tree.run_one_simulation()
+        a = tree.root_analysis()
+        if a["top"]:
+            return a["top"][0][0]
+        return tree.select_move(0.0)[0]
+
     def _play_batch(n: int, label: str = "") -> tuple[int, int, int]:
         """Play `n` games alternating colours; return (W, D, L)."""
         bw = bd = bl = 0
@@ -189,15 +209,26 @@ def main() -> int:
             tree = MCTSTree(CONFIG, model, device, engine=engine_inf)
             tree.reset(ob)
             while not pyb.is_game_over(claim_draw=True):
+                legal = ob.legal_moves()
+                uci_map = {_move_uci(m): m for m in legal}
                 our_turn = (pyb.turn == chess.WHITE) == we_white
                 if our_turn:
-                    mv = _our_move(tree, ob, sims)
-                    pyb.push(chess.Move.from_uci(_move_uci(mv)))
+                    move_int = _our_move(tree, sims)
+                    pyb.push(chess.Move.from_uci(_move_uci(move_int)))
                 else:
                     res = sf.play(pyb, _sf_limit())
                     pyb.push(res.move)
-                ob = Board.from_fen(pyb.fen())
-                tree.reset(ob)
+                    move_int = uci_map.get(res.move.uci())
+                # Advance the tree (subtree + GRU-history reuse). The old
+                # per-ply `tree.reset(ob)` discarded the search tree AND
+                # truncated the GRU history to one frame every move, so the
+                # net was measured on out-of-distribution inputs (P7-2).
+                if move_int is not None:
+                    ob = ob.apply_move(move_int)
+                    tree.advance(move_int, ob)
+                else:
+                    ob = Board.from_fen(pyb.fen())
+                    tree.reset(ob, keep_history=True)
             res = pyb.result(claim_draw=True)
             if res == "1/2-1/2":      bd += 1
             elif (res == "1-0") == we_white: bw += 1

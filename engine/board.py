@@ -266,6 +266,14 @@ else:
             if self._b.has_queenside_castling_rights(_pychess.BLACK): out[17] = 1.0
             out[18] = min(self._b.halfmove_clock, 100) / 100.0
             out[19] = min(self._b.fullmove_number, 200) / 200.0
+            # Plane 20: position occurred before (repetition marker). The
+            # fallback previously never wrote this plane while the C++
+            # backend did — a silent tensor-parity break (audit P1-2).
+            def _key(fen: str) -> str:
+                return " ".join(fen.split(" ")[:4])
+            cur = _key(self._b.fen())
+            if any(_key(f) == cur for f in self._hash_history[:-1]):
+                out[20] = 1.0
             return out
 
         def to_fen(self) -> str:
@@ -324,7 +332,12 @@ else:
         @property
         def fullmove_number(self) -> int: return self._b.fullmove_number
         @property
-        def hash(self) -> int: return self._b.zobrist_hash()
+        def hash(self) -> int:
+            # python-chess has no Board.zobrist_hash() method — the previous
+            # call raised AttributeError on first use (audit P1-6). The
+            # polyglot module provides the canonical Zobrist hash.
+            import chess.polyglot as _pcpoly
+            return _pcpoly.zobrist_hash(self._b)
         @property
         def ep_square(self)  -> int:
             return self._b.ep_square if self._b.ep_square is not None else -1

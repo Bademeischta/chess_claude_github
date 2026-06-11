@@ -57,9 +57,8 @@ class SelfPlayWorker:
         self.teacher_buffer = teacher_buffer
         self.device         = device
 
-        self._trees = [
-            MCTSTree(cfg, model, device) for _ in range(cfg.parallel_games)
-        ]
+        # (A per-worker list of MCTSTrees used to be allocated here but was
+        # never used — ParallelMCTS builds its own trees. Removed; audit F4.)
 
         # Persistent self-play pools. Created lazily on first use and kept
         # alive across batches so the game pool never drains between calls
@@ -100,8 +99,7 @@ class SelfPlayWorker:
             )
 
             # Capture board state before the move
-            board_t   = board.to_tensor()
-            history_t = self._get_history(tree)
+            board_t = board.to_tensor()
 
             # MCTS search. keep_history after move 0 so the GRU history that
             # advance() maintains is not wiped every move.
@@ -109,6 +107,11 @@ class SelfPlayWorker:
                 board, n_sims, temperature, use_dca=True,
                 keep_history=(move_num > 0),
             )
+
+            # Capture the GRU history AFTER the search: search() resets the
+            # tree at move 0, so reading it earlier returned stale frames
+            # from the previous game (audit P3-4 note).
+            history_t = self._get_history(tree)
 
             # Record
             record.board_tensors.append(board_t)
@@ -137,10 +140,8 @@ class SelfPlayWorker:
                 record.game_result = game_val
 
                 # Assign per-position WDL labels
-                for i, mn in enumerate(record.move_numbers):
+                for mn in record.move_numbers:
                     side = mn % 2  # 0=white, 1=black
-                    # Tablebase override where available
-                    tb_board = None
                     wdl = (game_val if side == 0 else 1.0 - game_val)
                     record.wdl_labels.append(wdl)
 
@@ -149,9 +150,12 @@ class SelfPlayWorker:
         return record
 
     def _get_history(self, tree: MCTSTree) -> np.ndarray:
+        # HISTORY CONVENTION (audit P3-4): positions strictly BEFORE the
+        # current board. The running history's last entry is the current
+        # position (seeded by reset / appended by advance), so drop it.
         T = self.cfg.gru_history_len
         buf = np.zeros((T, self.cfg.input_planes, 8, 8), dtype=np.float32)
-        return fill_history(buf, tree._board_history, T)
+        return fill_history(buf, tree._board_history[:-1], T)
 
     # ── Batch generation (synchronous, parallel via ParallelMCTS) ────────────
 

@@ -428,15 +428,22 @@ class MCTSTree:
                     leaf_node.children[move] = _PyNode(move, leaf_node, prior)
             self._backup_python(path, value)
 
-    def history_np(self) -> np.ndarray:
+    def history_np(self, exclude_last: bool = False) -> np.ndarray:
         """
         This tree's root GRU-history as a (T, planes, 8, 8) array, written
         into the reused scratch buffer. The caller must stack/copy it before
         the tree's next selection overwrites the buffer (ParallelMCTS stacks
         all trees' histories immediately after collection).
+
+        exclude_last=True drops the running history's final entry (the
+        current root) — used when the ROOT itself is being evaluated, so
+        the history always holds positions strictly before the input board
+        (audit P3-4).
         """
         T = self.cfg.gru_history_len
-        return fill_history(self._hist_np, self._board_history, T)
+        hist = self._board_history[:-1] if exclude_last else self._board_history
+        self._hist_np.fill(0.0)
+        return fill_history(self._hist_np, hist, T)
 
     def _select_python(
         self, root: "_PyNode", board: Board
@@ -502,13 +509,24 @@ class MCTSTree:
         return None
 
     @torch.no_grad()
-    def _nn_evaluate(self, board: Board) -> Tuple[float, np.ndarray]:
-        """Single-board neural network evaluation (no batching)."""
+    def _nn_evaluate(self, board: Board,
+                     exclude_last: bool = False) -> Tuple[float, np.ndarray]:
+        """Single-board neural network evaluation (no batching).
+
+        HISTORY CONVENTION (audit P3-4): the GRU history holds positions
+        strictly BEFORE the evaluated board. For LEAF evaluations the
+        running history ends at the root — the root *is* a position before
+        the leaf, so the full history is passed (exclude_last=False). For
+        ROOT evaluations the running history's last entry is the root
+        itself and must be dropped (exclude_last=True), otherwise training
+        data (which records pre-position history) and inference inputs
+        diverge.
+        """
         board_t = torch.from_numpy(board.to_tensor()).unsqueeze(0)  # (1,21,8,8)
         board_t = board_t.to(device=self.device, dtype=self._net_dtype())
 
         # GRU history
-        history_t = self._make_history_tensor()  # (1, T, 21, 8, 8)
+        history_t = self._make_history_tensor(exclude_last)  # (1, T, 21, 8, 8)
 
         policy_logits, value_scalar = self.engine.infer(board_t, history_t)
 
@@ -521,9 +539,12 @@ class MCTSTree:
         elif self.cfg.precision == "fp16": return torch.float16
         return torch.float32
 
-    def _make_history_tensor(self) -> Optional[torch.Tensor]:
+    def _make_history_tensor(self, exclude_last: bool = False
+                             ) -> Optional[torch.Tensor]:
         T = self.cfg.gru_history_len
-        fill_history(self._hist_np, self._board_history, T)
+        hist = self._board_history[:-1] if exclude_last else self._board_history
+        self._hist_np.fill(0.0)
+        fill_history(self._hist_np, hist, T)
         # copy_ does the H2D transfer + dtype cast into the persistent buffer;
         # no per-call allocation. Safe because infer() consumes it synchronously
         # before the next leaf overwrites it.
@@ -544,9 +565,14 @@ class MCTSTree:
     # ── Dirichlet noise ───────────────────────────────────────────────────
 
     def add_dirichlet_noise(self) -> None:
+        # Read eps LIVE from the config: the trainer's entropy controller
+        # (ERED) adjusts CONFIG.dirichlet_eps during training. The previous
+        # snapshot-at-__init__ meant ERED's noise regulation never reached
+        # the search (audit P4-4).
+        eps = max(float(getattr(self.cfg, "dirichlet_eps", self.dirichlet_e)), 0.0)
         if _USE_CPP:
             self._cpp_tree.add_dirichlet_noise(
-                self._root_node, self.dirichlet_a, self.dirichlet_e
+                self._root_node, self.dirichlet_a, eps
             )
         else:
             if not self._root_node.children:
@@ -554,7 +580,7 @@ class MCTSTree:
             n = len(self._root_node.children)
             noise = np.random.dirichlet([self.dirichlet_a] * n).astype(np.float32)
             for child, eta in zip(self._root_node.children.values(), noise):
-                child.P = (1.0 - self.dirichlet_e) * child.P + self.dirichlet_e * eta
+                child.P = (1.0 - eps) * child.P + eps * eta
 
     # ── Move selection ────────────────────────────────────────────────────
 
@@ -752,7 +778,8 @@ class MCTSTree:
             already = root.is_expanded()
         if already:
             return
-        value, policy_logits = self._nn_evaluate(self._root_board)
+        value, policy_logits = self._nn_evaluate(self._root_board,
+                                                 exclude_last=True)
         legal = self._root_board.legal_moves()
         if not legal:
             return
@@ -841,7 +868,9 @@ class ParallelMCTS:
             dtype = self.trees[0]._net_dtype()
 
             bt = np.stack([boards[i].to_tensor() for i in needs_eval])
-            ht = np.stack([self.trees[i].history_np() for i in needs_eval])
+            # Root evaluation: history must exclude the root itself (P3-4).
+            ht = np.stack([self.trees[i].history_np(exclude_last=True)
+                           for i in needs_eval])
 
             # Direct H2D transfer (no inline pin_memory — that would force a
             # synchronous pageable→pinned copy on this thread, paying more
@@ -854,7 +883,7 @@ class ParallelMCTS:
             # GPU tensor allocation. `.to('cpu', dtype, non_blocking=False)`
             # synchronises just like .cpu() does because the consumer below
             # needs the data immediately.
-            values_np = values.to("cpu", torch.float32).numpy()
+            # Root values are not consumed (priors only) — skip their D2H copy.
             logits_np = policy_logits.to("cpu", torch.float32).numpy()
 
             for k, i in enumerate(needs_eval):
@@ -966,29 +995,48 @@ class ParallelMCTS:
             except OSError:
                 self._opening_fens = []
 
-        if self._opening_fens:
-            board = Board.from_fen(random.choice(self._opening_fens))
-        else:
-            board = Board.from_fen(STARTPOS_FEN)
-
         plies = getattr(self.cfg, "random_opening_plies", 0)
-        for _ in range(plies):
-            if get_game_result(board) != GameResult.ONGOING:
-                break
-            legal = board.legal_moves()
-            if not legal:
-                break
-            board = board.apply_move(random.choice(legal))
-        return board
+        # Re-deal if the random plies stumbled into a terminal position
+        # (e.g. a fool's-mate pattern): a game seeded on a terminal board
+        # produced a sentinel move 0 + a garbage training row (audit P4-2).
+        for _attempt in range(10):
+            if self._opening_fens:
+                board = Board.from_fen(random.choice(self._opening_fens))
+            else:
+                board = Board.from_fen(STARTPOS_FEN)
+            for _ in range(plies):
+                if get_game_result(board) != GameResult.ONGOING:
+                    break
+                legal = board.legal_moves()
+                if not legal:
+                    break
+                board = board.apply_move(random.choice(legal))
+            if get_game_result(board) == GameResult.ONGOING:
+                return board
+        return Board.from_fen(STARTPOS_FEN)
 
-    @staticmethod
-    def _finalize_record(rec: GameRecord, result: "GameResult") -> None:
+    def _finalize_record(self, rec: GameRecord, result: "GameResult") -> None:
         if result == GameResult.WHITE_WIN:
             game_val = 1.0
         elif result == GameResult.BLACK_WIN:
             game_val = 0.0
+        elif result == GameResult.ONGOING and rec.mcts_qs:
+            # Move-cap hit: adjudicate from the final search Q instead of
+            # blanket-labelling a draw. Labelling every >cap game as 0.5
+            # corrupted value targets for all long games (audit P4-1).
+            # rec.mcts_qs[-1] is from the perspective of the side to move
+            # at the last recorded position (White iff last mn is even).
+            thr = float(getattr(self.cfg, "adjudicate_q_threshold", 0.0))
+            q_last = rec.mcts_qs[-1]
+            q_white = q_last if rec.move_numbers[-1] % 2 == 0 else -q_last
+            if thr > 0.0 and q_white >= thr:
+                game_val = 1.0
+            elif thr > 0.0 and q_white <= -thr:
+                game_val = 0.0
+            else:
+                game_val = 0.5
         else:
-            game_val = 0.5  # draw or forced draw by move limit
+            game_val = 0.5  # genuine draw
         rec.game_result = game_val
         for mn_j in rec.move_numbers:
             side = 0 if mn_j % 2 == 0 else 1  # 0=white, 1=black
@@ -1050,6 +1098,23 @@ class ParallelMCTS:
 
                 move, policy_target = tree.select_move(temperature)
 
+                if move == 0:
+                    # Sentinel: the root had no legal moves — the game is
+                    # already over. Finalize WITHOUT recording a garbage row
+                    # or applying the "pass move" that move-int 0 decodes to
+                    # (audit P4-2 / P1-5).
+                    finished = records[i]
+                    self._finalize_record(finished, get_game_result(board))
+                    boards[i]    = self._fresh_board()
+                    records[i]   = GameRecord()
+                    records[i].is_teacher = is_teacher
+                    move_nums[i] = 0
+                    streaks[i]   = [0, 0]
+                    fresh.add(i)
+                    if finished.move_numbers:  # only yield non-empty games
+                        yield finished
+                    continue
+
                 rec = records[i]
                 rec.board_tensors.append(board.to_tensor().astype(np.float16))
                 rec.policy_targets.append(policy_target)
@@ -1062,8 +1127,12 @@ class ParallelMCTS:
                 # Reuse the pool-wide scratch; fill_history overwrites it
                 # in place. Zero it first so stale frames from an older,
                 # longer game don't leak through when board_history is short.
+                # HISTORY CONVENTION (P3-4): record positions strictly BEFORE
+                # the current board ([:-1] — the running history's last entry
+                # is the position being recorded), matching what the network
+                # sees at root/leaf evaluation time.
                 self._hist_scratch.fill(0.0)
-                fill_history(self._hist_scratch, tree._board_history, T)
+                fill_history(self._hist_scratch, tree._board_history[:-1], T)
                 rec.history_tensors.append(
                     self._hist_scratch.astype(np.float16)  # owned copy
                 )

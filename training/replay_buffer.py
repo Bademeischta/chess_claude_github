@@ -209,6 +209,10 @@ class PrioritizedReplayBuffer:
         self._size = 0          # Current fill
         self._step = 0          # Training steps seen (for β annealing)
         self._max_prio = 1.0    # Max priority seen (new entries get this)
+        # Per-slot priority multiplier (draw down-weighting). Stored so the
+        # multiplier survives update_priorities() — otherwise the first
+        # TD-error update would wash the draw weighting out again.
+        self._prio_mult = np.ones(capacity, dtype=np.float32)
 
     def __len__(self) -> int:
         return self._size
@@ -226,14 +230,27 @@ class PrioritizedReplayBuffer:
                           - self.draw_priority_start_mult))
 
     def add(self, record: PositionRecord, td_error: Optional[float] = None) -> None:
-        """Add a single position. If no td_error given, uses max priority."""
+        """Add a single position. If no td_error given, uses max priority.
+
+        Positions from DRAWN games are down-weighted by the (ramped) draw
+        multiplier so the value head is not flooded by the early-training
+        draw majority. NOTE (audit P4-3): this multiplier existed as config
+        + `_current_draw_mult()` since the draw-collapse era but was never
+        actually applied to sampling — it is wired in here, and remembered
+        per slot so later priority updates keep the weighting.
+        """
         prio = (abs(td_error) + 1e-6) ** self.alpha if td_error is not None \
                else self._max_prio
+        self._max_prio = max(self._max_prio, prio)
+
+        mult = 1.0
+        if getattr(record, "wdl_label", None) == 0.5:
+            mult = self._current_draw_mult()
+        self._prio_mult[self._ptr] = mult
 
         self._data[self._ptr] = record
-        self.tree.update(self._ptr, prio)
+        self.tree.update(self._ptr, prio * mult)
 
-        self._max_prio = max(self._max_prio, prio)
         self._ptr  = (self._ptr + 1) % self.capacity
         self._size = min(self._size + 1, self.capacity)
 
@@ -288,7 +305,8 @@ class PrioritizedReplayBuffer:
     ) -> None:
         prios = (np.abs(td_errors) + 1e-6) ** self.alpha
         for idx, prio in zip(indices, prios):
-            self.tree.update(idx, prio)
+            # Preserve the per-slot draw multiplier set at add() time.
+            self.tree.update(idx, prio * float(self._prio_mult[idx]))
         self._max_prio = max(self._max_prio, float(prios.max()))
 
     def step(self) -> None:

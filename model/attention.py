@@ -23,8 +23,10 @@ class GRUHistoryEncoder(nn.Module):
     context map that is concatenated to the current board encoding.
 
     Input:
-        history: Tensor of shape (B, T, 21, 8, 8)  — T historical boards
-        (the current board is history[:, -1])
+        history: Tensor of shape (B, T, 21, 8, 8)  — the T positions
+        strictly BEFORE the current board, right-aligned, zero-padded
+        (the most recent past position is history[:, -1]; the current
+        board itself is NOT included — audit P3-4 convention)
 
     Output:
         context: Tensor of shape (B, 4, 8, 8)
@@ -73,20 +75,23 @@ class GRUHistoryEncoder(nn.Module):
         out_dtype = history.dtype
         # cuDNN rejects bf16 RNN weights for the contiguous fast path
         # (flatten_parameters() then no-ops and it warns + recompacts every
-        # call), so this encoder runs in fp32 while the rest of the net is
-        # bf16. Flatten before each call: ~free when already compact and
-        # robust to .to()/dtype casts, state_dict loads, and inference_mode.
-        x = history.reshape(B, T, C * H * W).float()
+        # call), so this encoder runs in fp32. Autocast is explicitly
+        # DISABLED for the whole block: with fp32 master weights + autocast
+        # compute (audit P2-3 fix) an enclosing autocast region would cast
+        # the RNN back to bf16 and reintroduce the cuDNN slow path.
+        device_type = "cuda" if history.is_cuda else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            x = history.reshape(B, T, C * H * W).float()
 
-        self.gru.flatten_parameters()
-        _, hidden = self.gru(x)
-        # hidden: (num_layers, B, hidden_size) — take the last layer
-        h_last = hidden[-1]  # (B, hidden_size)
+            self.gru.flatten_parameters()
+            _, hidden = self.gru(x)
+            # hidden: (num_layers, B, hidden_size) — take the last layer
+            h_last = hidden[-1]  # (B, hidden_size)
 
-        # Project to spatial context
-        context = self.proj(h_last)             # (B, 4*64)
-        context = context.reshape(B, self.output_planes, 8, 8)
-        context = self.norm(context)
+            # Project to spatial context
+            context = self.proj(h_last)             # (B, 4*64)
+            context = context.reshape(B, self.output_planes, 8, 8)
+            context = self.norm(context)
         return context.to(out_dtype)
 
     def make_history_buffer(

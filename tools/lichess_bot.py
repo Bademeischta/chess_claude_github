@@ -113,9 +113,13 @@ def _play_game(li: Lichess, game_id: str, my_id: str, ctx: dict) -> None:
         tree = MCTSTree(CONFIG, ctx["model"], ctx["device"],
                         engine=ctx["engine"])
         tree.reset(board)
+        # Real play: greedy, NO root Dirichlet noise (the default add_noise
+        # =True is for training-data diversity and weakened the bot's play;
+        # audit S10/P5-5).
         mv, _ = tree.search(board, ctx["sims"],
-                            temperature=CONFIG.temperature_final,
-                            use_dca=False, keep_history=False)
+                            temperature=0.0,
+                            use_dca=False, keep_history=False,
+                            add_noise=False)
         li.post(f"/api/bot/game/{game_id}/move/{_move_uci(mv)}")
 
 

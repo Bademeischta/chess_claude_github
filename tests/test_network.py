@@ -24,12 +24,16 @@ def test_forward_shapes(net):
     B = 2
     board = torch.zeros(B, 21, 8, 8)
     hist = torch.zeros(B, 4, 21, 8, 8)
-    policy, wdl, aux = net(board, hist)
+    policy, wdl_logits, aux = net(board, hist)
     assert policy.shape == (B, 4672)
-    assert wdl.shape == (B, 3)
+    assert wdl_logits.shape == (B, 3)
     assert aux.shape == (B, 1)
-    # WDL row-sums to 1 (softmax).
-    assert torch.allclose(wdl.sum(dim=-1), torch.ones(B), atol=1e-5)
+    # Forward returns RAW logits (audit P2-2: the trainer applies WDL
+    # cross-entropy on logits); probabilities come from wdl_probs().
+    probs = net.value_head.wdl_probs(wdl_logits)
+    assert torch.allclose(probs.sum(dim=-1), torch.ones(B), atol=1e-5)
+    v = net.value_head.scalar_value(wdl_logits)
+    assert float(v.abs().max()) <= 1.0
 
 
 def test_forward_without_history(net):

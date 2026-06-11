@@ -96,9 +96,13 @@ class Trainer:
             )
 
         # ── LR scheduler (Cosine Annealing with linear warmup) ─────────
+        # max_lr must be PER GROUP: a scalar is broadcast by OneCycleLR to
+        # every param group, silently erasing the backbone/head/GRU
+        # multipliers built above (audit finding P5-1).
+        group_max_lrs = [g["lr"] for g in self.optimizer.param_groups]
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
             self.optimizer,
-            max_lr    = cfg.lr_initial,
+            max_lr    = group_max_lrs,
             total_steps = cfg.total_steps,
             pct_start = cfg.warmup_steps / cfg.total_steps,
             anneal_strategy = "cos",
@@ -131,11 +135,8 @@ class Trainer:
         self._aux_active = True
 
         # ── Sync-cost mitigation state ─────────────────────────────────
-        # NaN guard runs every N steps (+ tight window after a hit) instead
-        # of every step — `if not torch.isfinite(loss):` is an implicit
-        # cudaDeviceSynchronize and dominated step cost in profiling.
-        self._nan_check_every = 50
-        self._nan_suspect = 0        # steps remaining of tight-mode after a hit
+        # (The NaN guard now runs every step, reusing the loss/total D2H
+        # sync that was already paid per step for metrics — see train_step.)
         # PER priority update can run with one-step latency without harm —
         # defer the device→host copy so it overlaps the next forward.
         self._deferred_td_update: tuple | None = None
@@ -290,25 +291,39 @@ class Trainer:
         log_probs_r = F.log_softmax(policy_logits_r.float(), dim=-1)
         policy_loss_r = -(pol_r_t * log_probs_r).sum(dim=-1)  # (B,)
 
-        # TD(λ) blended value target. wdl_r_t is in [0,1] (MC return from the
-        # side's view); q_r = P(win)-P(loss) is in [-1,1]. Both operands MUST be
-        # in the same space before blending — convert the MC return to [-1,1]
-        # first, so no post-blend rescale is needed.
-        wdl_r_f = wdl_r_pred.float()
-        q_r = wdl_r_f[:, 0] - wdl_r_f[:, 2]  # scalar value in [-1, 1]
-        mc_value_r = wdl_r_t * 2.0 - 1.0     # [0,1] → [-1,1]
+        # ── Value loss: WDL cross-entropy + TD(λ)-blended scalar MSE ──
+        # The network now emits WDL LOGITS. Primary supervision is a 3-class
+        # cross-entropy against the game outcome — this is what actually
+        # identifies P(draw) and removes the q≡0 collapse mode that pure
+        # P(win)−P(loss) MSE training had (audit finding P2-2; Lc0/KataGo
+        # practice). The TD(λ) blend with the recorded search Q is kept as a
+        # secondary MSE term on the scalar projection for variance reduction.
+        wdl_logits_r = wdl_r_pred.float()                  # (B, 3) logits
+        wdl_probs_r  = F.softmax(wdl_logits_r, dim=-1)
+        q_r = wdl_probs_r[:, 0] - wdl_probs_r[:, 2]        # scalar in [-1, 1]
+        mc_value_r = wdl_r_t * 2.0 - 1.0                   # [0,1] → [-1,1]
+
+        # Soft 3-class target from the [0,1] label (handles tablebase labels
+        # 0.25/0.75 gracefully): p_win = max(0, 2w−1), p_loss = max(0, 1−2w),
+        # p_draw = remainder. w∈{1, .5, 0} → exact one-hots.
+        p_win  = (2.0 * wdl_r_t - 1.0).clamp(min=0.0)
+        p_loss = (1.0 - 2.0 * wdl_r_t).clamp(min=0.0)
+        p_draw = (1.0 - p_win - p_loss).clamp(min=0.0)
+        wdl_target_r = torch.stack([p_win, p_draw, p_loss], dim=1)  # (B, 3)
+        log_wdl_r = F.log_softmax(wdl_logits_r, dim=-1)
+        value_ce_r = -(wdl_target_r * log_wdl_r).sum(dim=-1)        # (B,)
+
         # TD(λ) bootstrap = the MCTS root Q recorded during self-play (already
         # in [-1,1], side-to-move perspective), NOT the network's own current
-        # prediction. This is the intended AlphaZero-style target: a fixed
-        # search-derived value, so the regression goal is grad-free and the
-        # value head can't trivially self-bootstrap.
+        # prediction — a fixed search-derived target, grad-free.
         value_target_r = self.compute_td_lambda_targets(
             mc_value_r, mq_r_t, mn_r_t,
             self.cfg.td_lambda,
             self.cfg.td_lambda_start_move,
             self.cfg.td_lambda_end_move,
         )
-        value_loss_r = F.mse_loss(q_r, value_target_r, reduction="none")  # (B,)
+        value_mse_r = F.mse_loss(q_r, value_target_r, reduction="none")
+        value_loss_r = value_ce_r + 0.5 * value_mse_r      # (B,)
 
         # PER importance-sampling weights
         total_loss_r = (alpha_p_r * policy_loss_r + alpha_v_r * value_loss_r) * w_r_t
@@ -349,26 +364,20 @@ class Trainer:
         # overlaps with the backward/step kernels instead of blocking here.
         td_err_gpu = (q_r.detach() - value_target_r).abs()
 
-        # ── NaN/Inf guard: skip the step if loss is non-finite. A single
-        # backward with NaN gradients permanently corrupts AdamW's second
-        # moments, so it's better to drop the batch than to poison state.
-        # `torch.isfinite(loss)` followed by a Python truthiness check is an
-        # implicit cudaDeviceSynchronize — too expensive to do every step.
-        # Sample every N steps in normal operation; after any hit, run tight
-        # for a window so a burst of NaNs is caught immediately.
-        do_nan_check = (
-            (self.global_step % self._nan_check_every == 0)
-            or self._nan_suspect > 0
-        )
-        if do_nan_check and not torch.isfinite(loss):
+        # ── NaN/Inf guard — EVERY step. A single backward with NaN gradients
+        # permanently corrupts AdamW's moments, so a poisoned batch must
+        # never reach the optimizer. The D2H sync this costs was already
+        # being paid once per step by the `loss/total` metric below; the
+        # sync is simply hoisted before backward and its value reused
+        # (audit P5 note: the old every-50-steps sampling let up to 49 NaN
+        # backwards through before detection).
+        loss_val = float(loss.detach().cpu())
+        if not math.isfinite(loss_val):
             print(f"[Trainer] WARN: non-finite loss at step {self.global_step} "
                   f"— skipping update", flush=True)
             self.optimizer.zero_grad(set_to_none=True)
             self.global_step += 1
-            self._nan_suspect = 10  # tight-mode for the next few steps
             return {"loss": float("nan"), "skipped": 1.0}
-        if self._nan_suspect > 0:
-            self._nan_suspect -= 1
 
         # ── Backward ─────────────────────────────────────────────────
         if self._scaler is not None:
@@ -404,13 +413,17 @@ class Trainer:
 
         # ── Checkpoint ───────────────────────────────────────────────
         if self.global_step % self.cfg.checkpoint_every == 0:
-            ckpt_path = self.save_checkpoint()
+            self.save_checkpoint()
 
-            # Periodically save the replay and teacher buffers (every 5 checkpoints)
-            if self.global_step % (self.cfg.checkpoint_every * 5) == 0:
-                print(f"[Trainer] Saving buffers at step {self.global_step}...")
-                self.replay_buffer.save(ckpt_path.replace(".pt", "_replay.pkl"))
-                self.teacher_buffer.save(ckpt_path.replace(".pt", "_teacher.pkl"))
+            # Buffer snapshots: ONE persistence path (rolling gzip pair next
+            # to the checkpoints, written atomically via tmp+rename) on the
+            # cadence config.buffer_save_every prescribes. The previous code
+            # had two divergent paths — a dead `_save_buffers` and an
+            # unguarded per-step_NNN uncompressed dump that would have
+            # written multi-GB files (audit finding P5-4).
+            save_every = max(1, int(getattr(self.cfg, "buffer_save_every", 5)))
+            if self.global_step % (self.cfg.checkpoint_every * save_every) == 0:
+                self._save_buffers()
 
         # Cheap policy entropy for *logging* every step (the ERED regulation
         # in _regulate_entropy stays on its 5000-step cadence and is unchanged
@@ -425,7 +438,7 @@ class Trainer:
         # integration tests depend on it), but only collect the rest on the
         # logging cadence (~6 → 1 sync per non-log step).
         metrics: dict = {
-            "loss/total":        float(loss.detach().cpu()),
+            "loss/total":        loss_val,  # synced pre-backward (NaN guard)
             "lr":                self.optimizer.param_groups[0]["lr"],
             "dirichlet_eps":     self._dirichlet_eps,
             "alpha_v_global":    self._alpha_v_global,
@@ -516,9 +529,62 @@ class Trainer:
                 self._alpha_v_global * 1.05, self.cfg.alpha_v_global_max
             )
 
+        # Write back to the live config: MCTSTree.add_dirichlet_noise reads
+        # cfg.dirichlet_eps at search time. Without this write the entropy
+        # controller only ever adjusted a logged number (audit P4-4).
+        self.cfg.dirichlet_eps = self._dirichlet_eps
+
         return avg_entropy
 
     # ── Checkpoint I/O ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _collect_rng_states() -> dict:
+        """All RNG states in a torch.load(weights_only=True)-safe encoding
+        (tensors / primitives / lists only — numpy's raw state tuple holds
+        an ndarray, which is converted to a plain int list)."""
+        import random as _random
+        np_state = np.random.get_state()
+        py_state = _random.getstate()
+
+        def _plain(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, tuple):
+                return ["__tuple__"] + [_plain(o) for o in obj]
+            return obj
+
+        return {
+            "torch":  torch.get_rng_state(),
+            "cuda":   (torch.cuda.get_rng_state_all()
+                       if torch.cuda.is_available() else None),
+            "numpy":  _plain(np_state),
+            "python": _plain(py_state),
+        }
+
+    @staticmethod
+    def _restore_rng_states(rng: dict) -> None:
+        import random as _random
+
+        def _untuple(obj):
+            if isinstance(obj, list) and obj and obj[0] == "__tuple__":
+                return tuple(_untuple(o) for o in obj[1:])
+            return obj
+
+        try:
+            torch.set_rng_state(rng["torch"].cpu().to(torch.uint8))
+            if rng.get("cuda") is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(
+                    [s.cpu().to(torch.uint8) for s in rng["cuda"]])
+            np_s = _untuple(rng["numpy"])
+            np.random.set_state((np_s[0],
+                                 np.array(np_s[1], dtype=np.uint32),
+                                 int(np_s[2]), int(np_s[3]), float(np_s[4])))
+            py_s = _untuple(rng["python"])
+            _random.setstate(py_s)
+            print("[Trainer] RNG states restored from checkpoint.")
+        except Exception as e:  # noqa: BLE001 — never block a resume on RNG
+            print(f"[Trainer] RNG restore skipped ({type(e).__name__}: {e})")
 
     def save_checkpoint(self, path: Optional[str] = None) -> str:
         ckpt_dir = Path(self.cfg.checkpoint_dir)
@@ -546,8 +612,18 @@ class Trainer:
             # PER-beta annealing position. Without this, resumed training
             # jumps to a wrong beta and discontinuously reweights IS samples.
             "replay_step":    int(self.replay_buffer._step),
+            # RNG states — restored on load so a resumed run continues the
+            # same random streams (PER sampling, Dirichlet noise, move
+            # sampling). Without these, resume was provably not reproducible
+            # (audit P8-1 / P10.4).
+            "rng": self._collect_rng_states(),
         }
-        torch.save(state, path)
+        # Atomic write: torch.save directly onto the target can leave a
+        # truncated file on crash/power-loss, and the supervisor resumes
+        # from the newest mtime (audit P11). Write tmp, then replace.
+        tmp_path = path + ".tmp"
+        torch.save(state, tmp_path)
+        os.replace(tmp_path, path)
 
         # ONNX re-export hook (no-op unless inference_backend == "onnx").
         # Self-play's OnnxInferenceEngine picks the new file up by mtime
@@ -725,6 +801,10 @@ class Trainer:
         # a real arch mismatch worth reporting.
         _allowed_missing = ("piece_values",
                             "_material_scale",
+                            # fc_aux: tower-fed aux head introduced by the
+                            # audit-fix pass — fresh init on old checkpoints.
+                            "value_head.fc_aux.weight",
+                            "value_head.fc_aux.bias",
                             "policy_head.conv.weight",
                             "policy_head.conv.bias",
                             "policy_head.norm.weight",
@@ -758,10 +838,16 @@ class Trainer:
             self._scaler.load_state_dict(state["scaler"])
 
         self._dirichlet_eps  = state.get("dirichlet_eps",  self.cfg.dirichlet_eps)
+        # Push the restored eps into the live config so self-play trees
+        # (which read cfg.dirichlet_eps at search time) continue where the
+        # entropy controller left off (audit P4-4).
+        self.cfg.dirichlet_eps = self._dirichlet_eps
         self._alpha_v_global = state.get("alpha_v_global", 1.0)
         self._entropy_history = list(state.get("entropy_history", []))
         if "replay_step" in state:
             self.replay_buffer._step = int(state["replay_step"])
+        if "rng" in state and isinstance(state["rng"], dict):
+            self._restore_rng_states(state["rng"])
 
         # NOTE: do NOT manually fast-forward the scheduler here. Its
         # state_dict (loaded above) already restores last_epoch / _step_count,
@@ -812,9 +898,13 @@ class Trainer:
                 is_white_turn = (board.side_to_move == 0)
                 tree = white_tree if is_white_turn else black_tree
                 n_sims = self.cfg.mcts_sims
+                # Evaluation games: NO exploration noise, greedy move choice.
+                # The defaults (noise on, τ=0.1 sampling) made arena results
+                # noisy and weakened discrimination (audit P5-5).
                 move, _ = tree.search(board, n_sims,
-                                      temperature=self.cfg.temperature_final,
-                                      use_dca=False, keep_history=True)
+                                      temperature=0.0,
+                                      use_dca=False, keep_history=True,
+                                      add_noise=False)
                 new_board = board.apply_move(move)
 
                 # Advance both trees

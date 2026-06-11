@@ -794,6 +794,34 @@ void Board::generate_pseudo(MoveList &ml) const {
 //  Apply move → new Board
 // ============================================================
 
+// Would the en-passant capture `from_sq`x`ep` be fully LEGAL for `them`
+// (the side about to move) on board `b`? `to` is the square of the
+// double-pushed pawn that would be captured. Checked with surgically
+// modified occupancy instead of apply_move (which would need the side
+// already switched). Used to gate ep_square so the flag matches
+// python-chess' "legal" semantics: a pinned capturer must NOT set the
+// ep square — otherwise Zobrist keys, threefold detection, the FEN ep
+// field and NN plane 13 diverge for functionally identical positions
+// (audit finding P1-1).
+static bool ep_capture_legal(const Board &b, int us, int them,
+                             int ep, int to, int from_sq) {
+    Bitboard occ = (b.occupied & ~sq_bit(from_sq) & ~sq_bit(to)) | sq_bit(ep);
+    Bitboard king = b.pieces[them * 6 + KING];
+    if (!king) return true;  // malformed position — don't gate
+    int ksq = lsb(king);
+    Bitboard our_pawns = b.pieces[us * 6 + PAWN] & ~sq_bit(to);
+    if (PAWN_ATTACKS[them][ksq] & our_pawns) return false;
+    if (KNIGHT_ATTACKS[ksq] & b.pieces[us * 6 + KNIGHT]) return false;
+    if (KING_ATTACKS[ksq] & b.pieces[us * 6 + KING]) return false;
+    Bitboard diag = bishop_attacks(ksq, occ);
+    if (diag & (b.pieces[us * 6 + BISHOP] | b.pieces[us * 6 + QUEEN]))
+        return false;
+    Bitboard orth = rook_attacks(ksq, occ);
+    if (orth & (b.pieces[us * 6 + ROOK] | b.pieces[us * 6 + QUEEN]))
+        return false;
+    return true;
+}
+
 Board Board::apply_move(Move m) const {
     Board next = *this;
     int from = move_from(m);
@@ -840,7 +868,11 @@ Board Board::apply_move(Move m) const {
                       << std::endl;
         }
         assert(false && "apply_move called with stale/illegal move");
-        return next;  // identity-ish: same hash_history was already copied
+        // Return a CLEAN copy of the pre-move board. `next` already had the
+        // ep/castling Zobrist contributions XORed out at this point, so
+        // returning it would desync hash from position and poison repetition
+        // detection downstream (audit finding P1-3).
+        return *this;
     }
 
     // Capture: remove victim. Covers normal captures AND promotion-captures
@@ -901,11 +933,20 @@ Board Board::apply_move(Move m) const {
     // an enemy pawn must occupy to capture the pushed pawn.
     if (flags == MT_DOUBLE_PAWN) {
         int ep = (us == WHITE) ? from + 8 : from - 8;
-        if (PAWN_ATTACKS[us][ep] & next.pieces[them * 6 + PAWN]) {
+        // Record the ep square only if at least one enemy pawn can LEGALLY
+        // capture en passant (not merely sits adjacent — it may be pinned).
+        bool legal_ep = false;
+        Bitboard capturers = PAWN_ATTACKS[us][ep] & next.pieces[them * 6 + PAWN];
+        while (capturers && !legal_ep) {
+            int csq = lsb(capturers);
+            capturers &= capturers - 1;
+            legal_ep = ep_capture_legal(next, us, them, ep, to, csq);
+        }
+        if (legal_ep) {
             next.ep_square = ep;
             next.hash ^= ZOB_EP[file_of(ep)];
         } else {
-            next.hash ^= ZOB_EP[8]; // no capturable ep
+            next.hash ^= ZOB_EP[8]; // no legally capturable ep
         }
     } else {
         next.hash ^= ZOB_EP[8]; // no ep
@@ -1076,15 +1117,19 @@ void Board::to_tensor(float *out) const {
     float fmn = std::min(fullmove_number, 200) / 200.0f;
     std::fill(plane(19), plane(19) + 64, fmn);
 
-    // Plane 20: position already occurred (2-fold repetition marker)
-    if (is_threefold() || [&]() {
-            if (hash_history.size() < 3) return false;
-            int cnt = 0;
-            for (size_t i = 0; i < hash_history.size() - 1; i += 2)
-                if (hash_history[i] == hash) ++cnt;
-            return cnt >= 1;
-        }())
-        std::fill(plane(20), plane(20) + 64, 1.0f);
+    // Plane 20: position already occurred (2-fold repetition marker).
+    // Scan ALL prior entries: the Zobrist hash includes the side to move, so
+    // any match is a true repetition. (The previous even-index-only scan
+    // missed repetitions whenever the current position sat at an odd history
+    // index — about half of all cases; audit finding P1-2.)
+    if (hash_history.size() >= 2) {
+        for (size_t i = 0; i + 1 < hash_history.size(); ++i) {
+            if (hash_history[i] == hash) {
+                std::fill(plane(20), plane(20) + 64, 1.0f);
+                break;
+            }
+        }
+    }
 }
 
 // ============================================================

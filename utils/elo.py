@@ -81,13 +81,29 @@ class ELOSystem:
         losses: int,
         step: int = 0,
     ) -> tuple[float, float]:
-        """Update ELO from a multi-game series result."""
+        """Update ELO from a multi-game series result.
+
+        Applied PER GAME (interleaved to avoid order bias): the previous
+        single-aggregated-K=32 update capped the rating movement of an
+        entire 100-game series at ±32 ELO — even a 100-0 sweep — which made
+        the phase ELO targets (1600/2200/2400 from 1000) unreachable in
+        principle (audit P7-1d).
+        """
         total = wins + draws + losses
         if total == 0:
             return self.get_elo(player_a), self.get_elo(player_b)
-        result = (wins + 0.5 * draws) / total
-        # Treat the series as a single aggregated result
-        return self.update(player_a, player_b, result, step)
+        # Interleave W/D/L so the incremental updates don't depend on an
+        # arbitrary "all wins first" ordering.
+        results: list[float] = []
+        w, d, l = wins, draws, losses
+        while w or d or l:
+            if w: results.append(1.0); w -= 1
+            if d: results.append(0.5); d -= 1
+            if l: results.append(0.0); l -= 1
+        new_a = new_b = 0.0
+        for r in results:
+            new_a, new_b = self.update(player_a, player_b, r, step)
+        return new_a, new_b
 
     # ── Confidence interval ───────────────────────────────────────────────
 

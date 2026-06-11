@@ -146,12 +146,16 @@ class ValueHead(nn.Module):
         self.conv   = nn.Conv2d(in_channels, 1, kernel_size=1)
         self.norm   = nn.GroupNorm(num_groups=1, num_channels=1)
         self.fc1    = nn.Linear(64, hidden_size)
-        self.fc_wdl = nn.Linear(hidden_size, 3)    # win / draw / loss
+        self.fc_wdl = nn.Linear(hidden_size, 3)    # win / draw / loss LOGITS
+        # Auxiliary head — consumes the VALUE-TOWER FEATURES so its loss
+        # actually trains the tower (the previous material-only formulation
+        # sent gradient to just 6 scalars; audit finding P2-1). The learnable
+        # piece values act as an additive material prior inside the tanh, so
+        # `value_head.piece_values` stays inspectable/interpretable.
+        self.fc_aux = nn.Linear(hidden_size, 1)
         # Learnable piece values: [Pawn, Knight, Bishop, Rook, Queen, King].
         # King kept at 0 — both sides always have one, so it never contributes
-        # to material differential in legal positions. It stays a parameter
-        # (not a buffer) only so the optimizer reads it uniformly, but with
-        # zero gradient signal it stays at 0 unless the data says otherwise.
+        # to material differential in legal positions.
         self.piece_values = nn.Parameter(
             torch.tensor([1.0, 3.0, 3.0, 5.0, 9.0, 0.0], dtype=torch.float32)
         )
@@ -169,31 +173,38 @@ class ValueHead(nn.Module):
                 negated when black-to-move). ``None`` (back-compat / inference
                 paths without board context) → aux output is zeros.
         Returns:
-            wdl: (B, 3)  softmax probabilities [win, draw, loss]
-            aux: (B, 1)  tanh scalar in [-1, 1] (material-balance from
-                 side-to-move's perspective)
+            wdl_logits: (B, 3)  RAW logits [win, draw, loss]. No softmax in
+                 the forward pass — the trainer applies cross-entropy on the
+                 logits (audit finding P2-2: training only the P(win)−P(loss)
+                 projection of a softmaxed head left P(draw) unidentifiable
+                 and made the head collapse-prone). Use `scalar_value()` /
+                 `wdl_probs()` for probabilities.
+            aux: (B, 1)  tanh scalar in [-1, 1] — tower features + material
+                 prior, from the side-to-move's perspective.
         """
         x = F.gelu(self.norm(self.conv(x)))    # (B, 1, 8, 8)
         x = x.flatten(start_dim=1)              # (B, 64)
         x = F.gelu(self.fc1(x))                 # (B, 256)
-        wdl = F.softmax(self.fc_wdl(x), dim=-1) # (B, 3)
+        wdl_logits = self.fc_wdl(x)             # (B, 3) raw logits
 
+        aux_feat = self.fc_aux(x).squeeze(1)    # (B,) — gradient → tower
         if material_diff is None:
-            aux = torch.zeros(x.shape[0], 1, device=x.device, dtype=x.dtype)
+            aux = torch.tanh(aux_feat).unsqueeze(1)
         else:
-            # Cast piece_values to the same dtype as material_diff to stay
-            # safely inside BF16 autocast contexts. The parameter itself is
-            # held in fp32 (network is cast head-by-head; piece_values may
-            # already be bf16 if .to(bf16) was applied — both are fine).
-            pv = self.piece_values.to(material_diff.dtype)
-            scale = self._material_scale.to(material_diff.dtype)
-            score = (material_diff @ pv) / scale  # (B,)
-            aux = torch.tanh(score).unsqueeze(1)  # (B, 1)
-        return wdl, aux
+            pv = self.piece_values.to(aux_feat.dtype)
+            scale = self._material_scale.to(aux_feat.dtype)
+            prior = (material_diff.to(aux_feat.dtype) @ pv) / scale  # (B,)
+            aux = torch.tanh(aux_feat + prior).unsqueeze(1)  # (B, 1)
+        return wdl_logits, aux
 
-    def scalar_value(self, wdl: torch.Tensor) -> torch.Tensor:
+    def wdl_probs(self, wdl_logits: torch.Tensor) -> torch.Tensor:
+        """Softmax over the 3 WDL logits (fp32 for stability)."""
+        return F.softmax(wdl_logits.float(), dim=-1)
+
+    def scalar_value(self, wdl_logits: torch.Tensor) -> torch.Tensor:
         """
-        Convert WDL probabilities to a scalar value in [-1, 1].
+        Convert WDL logits to a scalar value in [-1, 1].
         value = P(win) - P(loss)
         """
-        return wdl[:, 0] - wdl[:, 2]  # (B,)
+        p = self.wdl_probs(wdl_logits)
+        return p[:, 0] - p[:, 2]  # (B,)

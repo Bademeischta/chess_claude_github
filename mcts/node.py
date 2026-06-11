@@ -56,11 +56,18 @@ class MCTSNode:
     def ucb(self, c_puct: float, parent_n: int) -> float:
         """
         Upper Confidence Bound (UCB) score for node selection.
-        UCB = Q + c_puct × P × √N_parent / (1 + N + virtual_loss)
+        UCB = -Q + c_puct × P × √N_parent / (1 + N + virtual_loss)
+
+        PERSPECTIVE: backup stores this node's Q from the side-to-move AT
+        THIS NODE; the parent selecting among children must therefore use
+        the NEGATED child Q (the child's mover is the parent's opponent).
+        Using +Q made the search avoid winning moves (audit finding P3-5,
+        proven in audit/scripts/test_puct_sign.py). Mirrors the identical
+        fix in engine/mcts_core.cpp MCTSNode::ucb.
         """
         u = c_puct * self.P * math.sqrt(parent_n) / (1.0 + self.N + self.virtual_loss)
-        q_adj = self.Q - float(self.virtual_loss)  # Each VL reduces Q by 1
-        return q_adj + u
+        q_parent = -self.Q - float(self.virtual_loss)  # parent persp. + VL penalty
+        return q_parent + u
 
     # ── Virtual loss ──────────────────────────────────────────────────────
 
@@ -108,12 +115,17 @@ class MCTSNode:
         import numpy as np
         counts = np.array([c.N for c in self.children.values()], dtype=np.float64)
         moves  = list(self.children.keys())
-        counts = np.power(counts, 1.0 / temperature)
-        total  = counts.sum()
-        if total < 1e-9:
+        # Log-space with max-subtraction: a direct N^(1/T) overflows for
+        # small temperatures (e.g. 128^50; audit finding P3-3).
+        with np.errstate(divide="ignore"):
+            logw = np.where(counts > 0, np.log(counts) / temperature, -np.inf)
+        if not np.isfinite(logw).any():
             return random.choice(moves)
-        probs = counts / total
-        idx = np.random.choice(len(moves), p=probs)
+        w = np.exp(logw - logw.max())
+        total = w.sum()
+        if total < 1e-12:
+            return random.choice(moves)
+        idx = np.random.choice(len(moves), p=w / total)
         return moves[idx]
 
     def get_policy_target(self) -> List[Tuple[int, float]]:

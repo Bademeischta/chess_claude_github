@@ -99,18 +99,19 @@ class ChessAIConfig:
     # values interpretable without locking them — set to 0.0 to disable.
     piece_value_anchor_weight: float = 1e-3
 
-    aux_loss_weight: float = 2.0  # 0.2 → 0.6 → 0.9 → 2.0: at step ~30k the
-                                  # value head fully regressed (v=0.0000 for
-                                  # 11+ consecutive log lines). 0.9 wasn't
-                                  # dominant enough — the WDL loss kept
-                                  # pulling the tower back to the trivial
-                                  # all-zero solution. 2.0 makes the
-                                  # material-balance aux head the dominant
-                                  # gradient source, FORCING the value
-                                  # tower to learn something non-trivial.
-                                  # Drop back to ~0.5 once the value-loss
-                                  # has stayed above 0.1 for at least
-                                  # 5000 consecutive steps.
+    aux_loss_weight: float = 0.5  # History: escalated 0.2→2.0 against the
+                                  # value-collapse — but the audit (P2-1)
+                                  # showed the old aux head was computed
+                                  # purely from input planes + 6 piece-value
+                                  # scalars, so its gradient never reached
+                                  # the value tower (the escalation was a
+                                  # placebo). The head is now rewired to
+                                  # consume the value-tower features (plus
+                                  # the material prior), so this weight
+                                  # actually trains the tower. 0.5 keeps it
+                                  # a helper, not the dominant term — the
+                                  # real fix for the collapse was the PUCT
+                                  # perspective bug + WDL cross-entropy.
     aux_steps: int = 5_000        # legacy: no longer consulted by the trainer
 
     # ── TD(λ) value blending ─────────────────────────────────────────────
@@ -162,17 +163,22 @@ class ChessAIConfig:
     parallel_games: int = 6  # hw-derived
     temperature_moves: int = 30    # τ=1.0 for first N moves, then τ→0
     temperature_final: float = 0.1 # Temperature after temperature_moves
-    max_game_moves: int = 80       # Hard cap on game length (half-moves).
-                                   # 150→120→80: at step ~30k the value head
-                                   # had completely collapsed back to 0
-                                   # because draws dominated. Cutting the
-                                   # cap to 80 forces decisive results MUCH
-                                   # earlier — any game where neither side
-                                   # makes progress gets cut. Yes some
-                                   # legitimate long games get truncated,
-                                   # but at this stage we vastly prefer
-                                   # 200 short decisive games over 50 long
-                                   # drawn ones for value-head supervision.
+    max_game_moves: int = 160      # Hard cap on game length (half-moves).
+                                   # History: 150→120→80 was tuned against
+                                   # the draw-collapse, but the audit showed
+                                   # (a) the collapse's root cause was the
+                                   # PUCT perspective bug (fixed), and
+                                   # (b) labelling every cap-hit as a draw
+                                   # corrupted value targets for ALL >40-move
+                                   # games (audit P4-1). Cap raised back to
+                                   # 160 plies; cap-hits are now ADJUDICATED
+                                   # from the final search Q instead of
+                                   # blanket-labelled 0.5 — see
+                                   # adjudicate_q_threshold below.
+    # When a game hits max_game_moves, the final position's MCTS root Q
+    # decides the label: |Q| above this threshold → win for the favoured
+    # side, otherwise draw. 0 disables adjudication (legacy 0.5 label).
+    adjudicate_q_threshold: float = 0.30
 
     # ── Resign mechanism (caps wasted compute on already-lost games) ─────
     # When the side-to-move's MCTS root Q stays below -resign_q for
@@ -224,16 +230,18 @@ class ChessAIConfig:
     # there is no decisive supervision to learn from — down-weighting draws
     # there throws away the only data we have. Ramping in delays the
     # rebalancing until decisive games actually populate the buffer.
-    draw_priority_mult: float = 0.1        # 0.5 → 0.3 → 0.1: with the value
-                                            # head fully regressed at step
-                                            # ~30k we need to almost completely
-                                            # exclude draws from the training
-                                            # distribution. 0.1 means a drawn
-                                            # position has 10% the chance of
-                                            # a decisive position to be sampled.
-                                            # The buffer still contains them,
-                                            # but the value head is now starved
-                                            # of the "predict 0.5" shortcut.
+    draw_priority_mult: float = 0.5        # AUDIT NOTE: this knob was DEAD
+                                            # CODE until the fix pass (P4-3) —
+                                            # the 0.5→0.3→0.1 escalation was
+                                            # tuned while it had no effect.
+                                            # Now that add() actually applies
+                                            # it, 0.1 would starve the value
+                                            # head of legitimate draw signal;
+                                            # 0.5 is the sane starting point.
+                                            # Draws are a real outcome the
+                                            # WDL head must learn — only the
+                                            # cap-draw flood it was fighting
+                                            # is gone (PUCT fix + adjudication).
     draw_priority_start_mult: float = 1.0
     draw_priority_ramp_steps: int = 25_000  # was 50_000 — at step 16k+ the
                                             # ramp was barely halfway in.
@@ -245,7 +253,10 @@ class ChessAIConfig:
     opponent_pool_size: int = 5
     arena_games: int = 200
     arena_every_n_steps: int = 10_000
-    self_play_vs_pool_ratio: float = 0.30  # 30 % of games vs pool checkpoint
+    # NOTE: a "play 30% of self-play games vs a pool checkpoint" knob
+    # (self_play_vs_pool_ratio) existed here but was never wired into the
+    # game scheduler; removed in the audit-fix pass (P4-5) rather than
+    # shipping a config option that does nothing.
 
     # ── Entropy-Regulated Exploration Decay ──────────────────────────────
     entropy_target: float = 2.5    # Target policy entropy in nats
@@ -314,6 +325,14 @@ class ChessAIConfig:
     # ── ELO tracking ────────────────────────────────────────────────────
     initial_elo: float = 1000.0
     elo_k_factor: float = 32.0
+
+    # ── Reproducibility ──────────────────────────────────────────────────
+    # 0 = unseeded (fresh entropy each run). Any other value seeds torch,
+    # numpy and random at startup; checkpoints additionally store/restore
+    # RNG states so resumed runs continue the same streams (audit P8-1).
+    # Note: cudnn.benchmark stays on, so GPU kernels may still introduce
+    # tiny nondeterminism; this makes runs *practically* reproducible.
+    seed: int = 0
 
 
 # Singleton used throughout the codebase.

@@ -43,7 +43,9 @@ class TrainingLogger:
                 from torch.utils.tensorboard import SummaryWriter
                 Path(log_dir).mkdir(parents=True, exist_ok=True)
                 self._writer = SummaryWriter(log_dir=log_dir)
-                print(f"[Logger] TensorBoard logging → {log_dir}")
+                # ASCII only: U+2192 here crashed callers on cp1252 consoles
+                # that hadn't reconfigured stdout (audit incidental finding).
+                print(f"[Logger] TensorBoard logging -> {log_dir}")
                 print(f"         Run: tensorboard --logdir={log_dir}")
             except ImportError:
                 print("[Logger] tensorboard not installed — console logging only.")

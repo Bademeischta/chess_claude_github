@@ -48,8 +48,17 @@ MCTSNode::MCTSNode(chess::Move move, MCTSNode *parent, float prior)
 
 float MCTSNode::ucb(float c_puct, int parent_n) const {
     float u = c_puct * P * std::sqrt((float)parent_n) / (1.0f + (float)(N + virtual_loss));
-    float q_adj = Q - (float)virtual_loss * 1.0f; // each virtual loss reduces Q by 1
-    return q_adj + u;
+    // PERSPECTIVE: backup() accumulates each node's W/Q from the side-to-move
+    // AT THAT NODE (the leaf gets +v_leaf, its parent -v_leaf, ...). The
+    // parent selecting among children therefore needs the NEGATED child Q —
+    // the child's side-to-move is the parent's opponent. Using +Q here made
+    // the search maximise the opponent's value: a mating move was visited
+    // once (terminal Q=-1 in the child's perspective) and then maximally
+    // avoided (audit finding P3-5, proven in audit/scripts/test_puct_sign.py).
+    // Each pending virtual loss additionally discounts the node by a full
+    // loss so parallel leaf collection diversifies.
+    float q_parent = -Q - (float)virtual_loss * 1.0f;
+    return q_parent + u;
 }
 
 void MCTSNode::add_virtual_loss() {
@@ -105,12 +114,22 @@ chess::Move MCTSNode::sample_move(float temperature) const {
         return best_move;
     }
 
-    // Compute visit count distribution with temperature
+    // Compute visit count distribution with temperature. Work in log-space
+    // and subtract the max before exponentiating: a direct N^(1/tau)
+    // overflows float for tau in (0.01, ~0.05] (e.g. 128^50 ≈ 1e105 → inf,
+    // degenerating the sampling; audit P3-3).
     std::vector<std::pair<chess::Move, float>> probs;
     probs.reserve(children.size());
+    double max_log = -1e300;
+    for (const auto &[mv, child_ptr] : children) {
+        if (child_ptr->N > 0)
+            max_log = std::max(max_log, std::log((double)child_ptr->N) / temperature);
+    }
     float total = 0.0f;
     for (const auto &[mv, child_ptr] : children) {
-        float p = std::pow((float)child_ptr->N, 1.0f / temperature);
+        float p = 0.0f;
+        if (child_ptr->N > 0)
+            p = (float)std::exp(std::log((double)child_ptr->N) / temperature - max_log);
         probs.push_back({mv, p});
         total += p;
     }
@@ -208,7 +227,14 @@ void MCTSTree::expand(MCTSNode *leaf,
         leaf->terminal = true;
         return;
     }
-    assert(legal_moves.size() == priors.size());
+    // Runtime check (NOT assert — asserts are compiled out in release builds
+    // and a too-short priors vector would read out of bounds; audit P3-2).
+    if (legal_moves.size() != priors.size()) {
+        throw std::invalid_argument(
+            "MCTSTree::expand: legal_moves/priors size mismatch (" +
+            std::to_string(legal_moves.size()) + " vs " +
+            std::to_string(priors.size()) + ")");
+    }
     // Double-expansion guard: if this leaf was already expanded (e.g. by a
     // parallel selection that raced past virtual_loss, or a Python caller
     // that re-invoked expand on the same node), `children[mv] = unique_ptr`

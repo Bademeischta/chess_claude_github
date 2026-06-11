@@ -186,9 +186,10 @@ class ChessNet(nn.Module):
             history: (B, T, 21, 8, 8) or None.  If None, no GRU context is added.
 
         Returns:
-            policy_logits: (B, 4672)
-            wdl:           (B, 3)
-            aux:           (B, 1)
+            policy_logits: (B, 4672)  raw logits
+            wdl_logits:    (B, 3)     raw logits (softmax via
+                                      value_head.wdl_probs / scalar_value)
+            aux:           (B, 1)     tanh scalar
         """
         if history is not None:
             context = self.gru_encoder(history)           # (B, 4, 8, 8)
@@ -237,9 +238,19 @@ class ChessNet(nn.Module):
         """
         Fast inference path used by MCTS leaf evaluation.
         Returns (policy_logits, value_scalar) — no aux head, no gradients.
+
+        Mixed precision: weights are kept in fp32 (master weights — casting
+        them to bf16 put AdamW's moments in bf16 and rounded small updates
+        away; audit P2-3). Inference compute runs under autocast in the
+        dtype build_model derived from cfg.precision.
         """
-        policy_logits, wdl, _ = self.forward(board, history)
-        value = self.value_head.scalar_value(wdl)  # (B,) in [-1, 1]
+        amp = getattr(self, "_amp_dtype", None)
+        if amp is not None and board.is_cuda:
+            with torch.autocast(device_type="cuda", dtype=amp):
+                policy_logits, wdl_logits, _ = self.forward(board, history)
+        else:
+            policy_logits, wdl_logits, _ = self.forward(board, history)
+        value = self.value_head.scalar_value(wdl_logits)  # (B,) in [-1, 1]
         return policy_logits, value
 
     # ── Parameter group helpers (for separate LR per component) ──────────
@@ -302,14 +313,20 @@ def build_model(cfg, compile_model: bool = True) -> ChessNet:
     device = torch.device(cfg.device)
     net = net.to(device)
 
-    if cfg.precision == "bf16":
-        net = net.to(dtype=torch.bfloat16)
-    elif cfg.precision == "fp16":
-        net = net.to(dtype=torch.float16)
+    # MASTER WEIGHTS STAY FP32 (audit P2-3/P5-3): the previous
+    # `net.to(bfloat16)` made AdamW step on bf16 parameters with bf16
+    # moments — updates smaller than ~0.4% relative were rounded away,
+    # silently stalling late training. Mixed precision is now done the
+    # standard way: fp32 weights + autocast compute. The trainer wraps its
+    # forward in autocast already; the inference path autocasts via the
+    # dtype recorded here. VRAM cost ≈ +95 MB on this model — negligible
+    # (measured 2.6 / 12 GB peak at batch 1024).
+    net._amp_dtype = (torch.bfloat16 if cfg.precision == "bf16" else
+                      torch.float16 if cfg.precision == "fp16" else None)
 
     # The GRU history encoder must stay fp32: cuDNN won't use the contiguous
     # RNN fast path for bf16 weights (flatten_parameters() no-ops and it
-    # recompacts on every forward). It casts internally and back.
+    # recompacts on every forward). Its forward disables autocast internally.
     net.gru_encoder.float()
 
     # NOTE: a channels_last memory-format pass was tried and reverted —

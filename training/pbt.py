@@ -113,25 +113,17 @@ class OpponentPool:
             return None
         return self._pool[0].path
 
-    def random_opponent_path(self) -> Optional[str]:
-        """Sample a random checkpoint from the pool (uniform)."""
+    def best_opponent_id(self) -> Optional[str]:
+        """player_id of the strongest pool member (for honest ELO updates)."""
         if not self._pool:
             return None
-        return random.choice(self._pool).path
+        return self._pool[0].player_id
 
-    def should_play_pool(self, pool_ratio: float = 0.30) -> bool:
-        """True if this game should be played against a pool opponent."""
-        return len(self._pool) >= 1 and random.random() < pool_ratio
-
-    def get_opponent_path(self, pool_ratio: float = 0.30) -> Optional[str]:
-        """
-        Returns the path of the opponent for this game:
-          - 30% probability: random pool checkpoint
-          - 70%: None (meaning play against current model itself)
-        """
-        if self.should_play_pool(pool_ratio):
-            return self.random_opponent_path()
-        return None
+    # NOTE: `get_opponent_path` / `should_play_pool` / `random_opponent_path`
+    # ("30% of self-play games vs a pool checkpoint") were removed in the
+    # audit-fix pass: they were never wired into the game scheduler (audit
+    # P4-5). Re-add together with per-tree opponent-model support in
+    # ParallelMCTS if pool-opponent self-play is implemented for real.
 
     # ── ELO management ───────────────────────────────────────────────────
 
