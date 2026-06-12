@@ -10,7 +10,7 @@
   "startpos_20_moves": {
     "ok": true,
     "result": 20,
-    "secs": 2.32
+    "secs": 2.38
   },
   "perft_suite": {
     "ok": true,
@@ -20,7 +20,7 @@
   "parity_200_games": {
     "ok": true,
     "result": "200 random games x 60 plies match python-chess",
-    "secs": 1.7
+    "secs": 1.78
   },
   "tensor_determinism": {
     "ok": true,
@@ -30,7 +30,7 @@
   "encoding_bijectivity_random_games": {
     "ok": true,
     "result": "2427 positions verified, no collisions, decode==encode",
-    "secs": 0.33
+    "secs": 0.35
   },
   "underpromotion_encoding_both_colors": {
     "ok": true,
@@ -87,11 +87,11 @@
   "fallback_hash_attr_P1_6": {
     "ok": true,
     "result": {
-      "returncode": 1,
-      "stdout": "",
-      "stderr_tail": "AttributeError: 'Board' object has no attribute 'zobrist_hash'"
+      "returncode": 0,
+      "stdout": "5060803636482931868",
+      "stderr_tail": "  from engine.board import Board, STARTPOS_FEN"
     },
-    "secs": 0.23
+    "secs": 0.22
   },
   "ep_unconditional_vs_gated_pyd_currency_T0_1": {
     "ok": true,
@@ -99,7 +99,7 @@
       "ep_after_lone_e4": -1,
       "gated_build": true,
       "has_stale_counter_binding": true,
-      "pyd_mtime": "2026-06-11 08:00"
+      "pyd_mtime": "2026-06-12 14:34"
     },
     "secs": 0.0
   },
@@ -108,18 +108,18 @@
     "result": {
       "startpos": {
         "legal_moves": 20,
-        "legal_moves_calls_per_s": 594485,
+        "legal_moves_calls_per_s": 587323,
         "us_per_call": 1.7
       },
       "middlegame": {
         "legal_moves": 49,
-        "legal_moves_calls_per_s": 243364,
+        "legal_moves_calls_per_s": 242918,
         "us_per_call": 4.1
       },
       "perft4": {
         "nodes": 197281,
         "secs": 0.013,
-        "nodes_per_s": 15537118
+        "nodes_per_s": 15725115
       }
     },
     "secs": 2.01

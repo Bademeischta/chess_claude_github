@@ -1,86 +1,86 @@
 {
-  "checkpoint_step": 63400,
+  "checkpoint_step": 9098,
   "parallel_games": 32,
   "mcts_sims": 128,
   "eager_sweep": [
     {
       "batch": 1,
-      "median_ms": 5.257,
-      "positions_per_s": 190
+      "median_ms": 6.121,
+      "positions_per_s": 163
     },
     {
       "batch": 8,
-      "median_ms": 5.3,
-      "positions_per_s": 1509
+      "median_ms": 6.288,
+      "positions_per_s": 1272
     },
     {
       "batch": 32,
-      "median_ms": 4.734,
-      "positions_per_s": 6760
+      "median_ms": 7.297,
+      "positions_per_s": 4386
     },
     {
       "batch": 128,
-      "median_ms": 7.418,
-      "positions_per_s": 17256
+      "median_ms": 10.694,
+      "positions_per_s": 11969
     },
     {
       "batch": 256,
-      "median_ms": 12.001,
-      "positions_per_s": 21332
+      "median_ms": 17.088,
+      "positions_per_s": 14981
     },
     {
       "batch": 512,
-      "median_ms": 20.913,
-      "positions_per_s": 24482
+      "median_ms": 33.272,
+      "positions_per_s": 15388
     },
     {
       "batch": 1024,
-      "median_ms": 45.016,
-      "positions_per_s": 22747
+      "median_ms": 68.762,
+      "positions_per_s": 14892
     }
   ],
   "cudagraph_at_pool_width": {
     "batch": 32,
-    "median_ms": 1.914,
-    "positions_per_s": 16716
+    "median_ms": 2.227,
+    "positions_per_s": 14368
   },
   "cudagraph_batch1_padded": {
     "batch": 1,
-    "median_ms": 1.941,
-    "positions_per_s": 515
+    "median_ms": 2.248,
+    "positions_per_s": 445
   },
   "single_tree_unbatched_eager": {
     "sims": 256,
-    "secs": 1.552,
-    "sims_per_s": 165,
-    "ms_per_128sim_move": 776.1,
-    "ms_per_800sim_move": 4850.6
+    "secs": 2.397,
+    "sims_per_s": 107,
+    "ms_per_128sim_move": 1198.3,
+    "ms_per_800sim_move": 7489.2
   },
   "single_tree_batched_eager": {
     "sims": 256,
-    "secs": 0.066,
-    "sims_per_s": 3873,
-    "ms_per_128sim_move": 33.1,
-    "ms_per_800sim_move": 206.6
+    "secs": 0.089,
+    "sims_per_s": 2864,
+    "ms_per_128sim_move": 44.7,
+    "ms_per_800sim_move": 279.3
   },
   "single_tree_batched_cudagraph": {
     "sims": 256,
-    "secs": 0.032,
-    "sims_per_s": 7965,
-    "ms_per_128sim_move": 16.1,
-    "ms_per_800sim_move": 100.4
+    "secs": 0.045,
+    "sims_per_s": 5676,
+    "ms_per_128sim_move": 22.6,
+    "ms_per_800sim_move": 140.9
   },
   "pool_move_timesplit": {
     "n_trees": 32,
     "rounds": 128,
     "total_sims": 4096,
-    "wall_s": 0.62,
-    "sims_per_s": 6603,
-    "select_pct": 12.8,
-    "infer_pct": 62.1,
-    "expand_backup_pct": 24.2,
-    "ms_per_move_all_trees": 620.4,
-    "positions_per_hour_at_this_rate": 185698
+    "wall_s": 0.928,
+    "sims_per_s": 4412,
+    "select_pct": 7.2,
+    "infer_pct": 68.8,
+    "expand_backup_pct": 23.0,
+    "ms_per_move_all_trees": 928.4,
+    "positions_per_hour_at_this_rate": 124083
   },
   "stale_moves_after_bench": 0,
   "determinism": {
