@@ -248,3 +248,100 @@ def test_move_encoding_bijective_startpos_both_colors():
             assert ai not in seen
             seen[ai] = m
             assert action_index_to_move(ai, b) == m
+
+
+# ── NEW-1 (2026-06-12): pool registration must persist immediately ───────
+
+def test_pool_register_persists_state(tmp_path):
+    """register_current() must write pool_state.json right away. Previously
+    save_state() only ran after arenas (step ~10k) / graceful shutdown, so a
+    restart found an empty pool and overwrote the net_step0 baseline with
+    current weights (observed in the 2026-06-11 production run)."""
+    import torch.nn as nn
+    from training.pbt import OpponentPool
+
+    pool = OpponentPool(pool_size=3, checkpoint_dir=str(tmp_path),
+                        initial_elo=1000.0)
+    pool.register_current(nn.Linear(4, 2), step=0, elo=1000.0)
+
+    assert (tmp_path / "pool_state.json").exists(), \
+        "register_current must persist pool state (audit NEW-1)"
+
+    # A fresh pool (simulated restart) must see the baseline entry.
+    pool2 = OpponentPool(pool_size=3, checkpoint_dir=str(tmp_path),
+                         initial_elo=1000.0)
+    pool2.load_state()
+    assert pool2._pool, "restart must find the registered baseline"
+    assert pool2._pool[0].player_id == "net_step0"
+
+
+# ── NEW-2 (2026-06-12): WDL labels from recorded side, not mn%2 parity ───
+
+def test_wdl_labels_use_recorded_sides():
+    """A game seeded from a Black-to-move position has mn=0 ↔ Black. Parity-
+    derived labels would invert every label in such games (odd
+    random_opening_plies / Black-to-move opening-book FENs)."""
+    import types
+    from mcts.tree import GameRecord, ParallelMCTS
+    from engine.rules import GameResult
+
+    rec = GameRecord()
+    rec.move_numbers = [0, 1, 2]
+    rec.sides        = [1, 0, 1]     # Black to move first
+    rec.mcts_qs      = [0.0, 0.0, 0.0]
+    dummy = types.SimpleNamespace(cfg=CONFIG)
+    ParallelMCTS._finalize_record(dummy, rec, GameResult.WHITE_WIN)
+    # mn=0 was BLACK to move → label 1-1.0 = 0.0 (loss for the mover)
+    assert rec.wdl_labels == [0.0, 1.0, 0.0], (
+        f"labels must follow recorded sides, got {rec.wdl_labels}")
+
+    # Cap adjudication must also flip via the recorded last side.
+    rec2 = GameRecord()
+    rec2.move_numbers = [0, 1]
+    rec2.sides        = [0, 1]       # last recorded mover is Black
+    rec2.mcts_qs      = [0.0, 0.8]   # +0.8 for Black → White-persp -0.8
+    ParallelMCTS._finalize_record(dummy, rec2, GameResult.ONGOING)
+    assert rec2.game_result == 0.0, "Black-favoured cap game must be 0.0"
+
+    # Fallback: no sides recorded → legacy parity behaviour.
+    rec3 = GameRecord()
+    rec3.move_numbers = [0, 1]
+    rec3.mcts_qs      = [0.0, 0.0]
+    ParallelMCTS._finalize_record(dummy, rec3, GameResult.WHITE_WIN)
+    assert rec3.wdl_labels == [1.0, 0.0]
+
+
+# ── NEW-3 (2026-06-12): legacy buffer load survives capacity changes ─────
+
+def test_legacy_buffer_load_capacity_change(tmp_path):
+    """PrioritizedReplayBuffer.load() used to rebind tree.tree wholesale —
+    a dump from a different capacity silently broke the SumTree leaf-offset
+    invariant. It must rebuild from leaves instead."""
+    from training.replay_buffer import PrioritizedReplayBuffer, PositionRecord
+
+    def rec():
+        pol = np.zeros(CONFIG.num_actions, dtype=np.float32)
+        pol[0] = 1.0
+        return PositionRecord(
+            board_tensor=np.zeros((21, 8, 8), np.float16),
+            history_tensor=np.zeros((1, 21, 8, 8), np.float16),
+            policy_target=pol, wdl_label=1.0,
+            phase=0, piece_count=32, move_number=0,
+        )
+
+    small = PrioritizedReplayBuffer(capacity=4)
+    for _ in range(4):
+        small.add(rec())
+    p = tmp_path / "buf.pkl"
+    small.save(str(p))
+
+    big = PrioritizedReplayBuffer(capacity=16)
+    big.load(str(p))
+    assert len(big._data) == 16, "data list must match current capacity"
+    assert big._size == 4
+    # SumTree invariant: root total == sum of leaves, sampling works.
+    leaves = big.tree.tree[big.tree.capacity - 1:]
+    assert abs(big.tree.total_priority - leaves.sum()) < 1e-9
+    records, idx, w = big.sample(8)
+    assert all(r is not None for r in records), \
+        "sampling after capacity-change load must never yield empty slots"

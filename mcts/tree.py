@@ -87,6 +87,10 @@ class GameRecord:
         "mcts_qs",           # list[float] — MCTS root Q in [-1,1] (TD bootstrap)
         "game_result",       # float: 1.0/0.5/0.0 from white's perspective
         "move_numbers",      # list[int]
+        "sides",             # list[int] 0=white,1=black — side to move at each
+                             # recorded position. Authoritative for WDL labels;
+                             # mn%2 parity breaks when games start from
+                             # Black-to-move FENs or odd random_opening_plies.
         "phases",            # list[int]  0=opening, 1=mid, 2=endgame
         "piece_counts",      # list[int]
         "is_teacher",        # bool: was this a teacher (high-sim) game?
@@ -100,6 +104,7 @@ class GameRecord:
         self.mcts_qs:         list = []
         self.game_result:     float = 0.5
         self.move_numbers:    list = []
+        self.sides:           list = []
         self.phases:          list = []
         self.piece_counts:    list = []
         self.is_teacher:      bool = False
@@ -1016,6 +1021,15 @@ class ParallelMCTS:
         return Board.from_fen(STARTPOS_FEN)
 
     def _finalize_record(self, rec: GameRecord, result: "GameResult") -> None:
+        # Side to move at each recorded position. The recorded board side is
+        # authoritative — mn%2 parity silently inverts EVERY label in a game
+        # that starts from a Black-to-move opening FEN, an odd
+        # random_opening_plies count, or after a stale-move side desync.
+        # Parity remains only as a fallback for records without sides.
+        sides = (rec.sides
+                 if getattr(rec, "sides", None)
+                 and len(rec.sides) == len(rec.move_numbers)
+                 else [mn % 2 for mn in rec.move_numbers])
         if result == GameResult.WHITE_WIN:
             game_val = 1.0
         elif result == GameResult.BLACK_WIN:
@@ -1025,10 +1039,11 @@ class ParallelMCTS:
             # blanket-labelling a draw. Labelling every >cap game as 0.5
             # corrupted value targets for all long games (audit P4-1).
             # rec.mcts_qs[-1] is from the perspective of the side to move
-            # at the last recorded position (White iff last mn is even).
+            # at the last recorded position.
             thr = float(getattr(self.cfg, "adjudicate_q_threshold", 0.0))
             q_last = rec.mcts_qs[-1]
-            q_white = q_last if rec.move_numbers[-1] % 2 == 0 else -q_last
+            last_side = sides[-1] if sides else rec.move_numbers[-1] % 2
+            q_white = q_last if last_side == 0 else -q_last
             if thr > 0.0 and q_white >= thr:
                 game_val = 1.0
             elif thr > 0.0 and q_white <= -thr:
@@ -1038,8 +1053,7 @@ class ParallelMCTS:
         else:
             game_val = 0.5  # genuine draw
         rec.game_result = game_val
-        for mn_j in rec.move_numbers:
-            side = 0 if mn_j % 2 == 0 else 1  # 0=white, 1=black
+        for side in sides:
             rec.wdl_labels.append(game_val if side == 0 else 1.0 - game_val)
 
     def game_stream(self, is_teacher: bool = False):
@@ -1121,6 +1135,7 @@ class ParallelMCTS:
                 q_root = tree.root_value()
                 rec.mcts_qs.append(q_root)
                 rec.move_numbers.append(mn)
+                rec.sides.append(board.side_to_move)
                 rec.phases.append(board.get_phase())
                 rec.piece_counts.append(board.piece_count())
 
@@ -1138,12 +1153,13 @@ class ParallelMCTS:
                 )
 
                 # Resign tracking — track consecutive low-Q moves PER SIDE.
-                # `mn % 2` is the side to move BEFORE this move (0=white,1=black);
-                # root_value is from that side's perspective. Disable resign
-                # before move 20 — early-opening Q is too noisy when the net
-                # is weak, and false resigns bias the training distribution
-                # toward pessimism in book positions.
-                side = mn % 2
+                # The board's own side_to_move (NOT mn%2 parity — see
+                # _finalize_record) is the side moving now; root_value is
+                # from that side's perspective. Disable resign before move
+                # 20 — early-opening Q is too noisy when the net is weak,
+                # and false resigns bias the training distribution toward
+                # pessimism in book positions.
+                side = board.side_to_move
                 if resign_limit > 0 and mn >= 20 and q_root < -resign_q:
                     streaks[i][side] += 1
                 else:

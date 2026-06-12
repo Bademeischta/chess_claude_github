@@ -119,6 +119,7 @@ class SelfPlayWorker:
             record.policy_targets.append(policy_target)
             record.mcts_qs.append(tree.root_value())
             record.move_numbers.append(move_num)
+            record.sides.append(board.side_to_move)
             record.phases.append(board.get_phase())
             record.piece_counts.append(board.piece_count())
 
@@ -139,9 +140,9 @@ class SelfPlayWorker:
                     game_val = 0.5
                 record.game_result = game_val
 
-                # Assign per-position WDL labels
-                for mn in record.move_numbers:
-                    side = mn % 2  # 0=white, 1=black
+                # Assign per-position WDL labels from the RECORDED side to
+                # move (robust to non-startpos seeds; see _finalize_record).
+                for side in record.sides:
                     wdl = (game_val if side == 0 else 1.0 - game_val)
                     record.wdl_labels.append(wdl)
 

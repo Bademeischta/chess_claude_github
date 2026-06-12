@@ -332,7 +332,7 @@ class ChessAIConfig:
     # RNG states so resumed runs continue the same streams (audit P8-1).
     # Note: cudnn.benchmark stays on, so GPU kernels may still introduce
     # tiny nondeterminism; this makes runs *practically* reproducible.
-    seed: int = 0
+    seed: int = 42
 
 
 # Singleton used throughout the codebase.

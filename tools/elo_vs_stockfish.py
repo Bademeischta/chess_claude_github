@@ -392,12 +392,27 @@ def main() -> int:
     sf.quit()
 
     diff, lo, hi = ELOSystem.elo_difference_ci(wins, draws, losses)
+    # In --sf-skill mode the opponent's strength is the skill level's
+    # approximate ELO, NOT args.elo (whose 1500 default previously leaked
+    # into the summary and inflated "Estimated ELO" by hundreds of points).
+    _SKILL_ELO = [800, 950, 1100, 1250, 1400, 1500, 1600, 1700, 1800, 1900,
+                  2000, 2050, 2100, 2150, 2200, 2300, 2400, 2500, 2700,
+                  2850, 3000]
+    if args.sf_skill is not None:
+        anchor = _SKILL_ELO[max(0, min(20, int(args.sf_skill)))]
+        label  = f"Stockfish skill {int(args.sf_skill)} (≈{anchor})"
+    else:
+        anchor = args.elo
+        label  = f"Stockfish@{args.elo}"
     print("\n" + "=" * 52)
-    print(f"  vs Stockfish@{args.elo}  ({args.games} games, {sims} sims)")
+    print(f"  vs {label}  ({args.games} games, {sims} sims)")
     print(f"  W{wins} D{draws} L{losses}")
     print(f"  ELO diff vs SF : {diff:+.0f}  (95% CI {lo:+.0f}..{hi:+.0f})")
-    print(f"  Estimated ELO  : {args.elo + diff:.0f}  "
-          f"(CI {args.elo + lo:.0f}..{args.elo + hi:.0f})")
+    print(f"  Estimated ELO  : {anchor + diff:.0f}  "
+          f"(CI {anchor + lo:.0f}..{anchor + hi:.0f})")
+    if args.sf_skill is not None:
+        print("  NOTE: skill-level ELO anchors are rough — use --auto or "
+              "UCI_Elo anchors (≥1320) for calibrated numbers.")
     print("=" * 52)
     return 0
 

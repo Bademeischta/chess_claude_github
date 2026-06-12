@@ -105,6 +105,13 @@ class OpponentPool:
 
         self._current_id = player_id
         self._step = step
+        # Persist immediately. save_state() was previously only reached via
+        # arena runs (first at step ~10k) and graceful shutdown, so any
+        # restart before then found an EMPTY pool and the "first-ever run"
+        # guard re-registered net_step0.pt with the CURRENT weights —
+        # observed in production on 2026-06-11: the random baseline was
+        # overwritten with step-7828 weights at the 13:48 restart (NEW-1).
+        self.save_state()
         return player_id
 
     def best_opponent_path(self) -> Optional[str]:

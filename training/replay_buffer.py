@@ -339,19 +339,40 @@ class PrioritizedReplayBuffer:
             return
         with open(path, "rb") as f:
             state = pickle.load(f)
-        self._data      = state["data"]
-        self._ptr       = state["ptr"]
-        self._size      = state["size"]
+        d = list(state["data"])
+        # Normalise the data list to the CURRENT capacity: a shorter list
+        # makes add() raise IndexError once _ptr passes its end; a longer
+        # one silently keeps unreachable rows alive (audit NEW-3).
+        if len(d) < self.capacity:
+            d.extend([None] * (self.capacity - len(d)))
+        elif len(d) > self.capacity:
+            d = d[len(d) - self.capacity:]
+        self._data      = d
+        self._ptr       = int(state["ptr"]) % self.capacity
+        self._size      = min(int(state["size"]), self.capacity)
         self._step      = state["step"]
         self._max_prio  = state.get("max_prio", 1.0)
 
-        if "tree" in state:
+        if "tree" in state and len(state["tree"]) == len(self.tree.tree):
             self.tree.tree = state["tree"]
+        elif "tree" in state:
+            # Capacity changed since the dump — rebinding the raw array would
+            # silently break the SumTree invariants (leaf offset = capacity-1).
+            # Rebuild from the dump's leaves instead (audit NEW-3).
+            old_cap   = (len(state["tree"]) + 1) // 2
+            old_leafs = state["tree"][old_cap - 1: old_cap - 1 + old_cap]
+            n = min(self._size, self.capacity, len(old_leafs))
+            print(f"[Buffer] Capacity changed ({old_cap:,} → "
+                  f"{self.capacity:,}); rebuilding SumTree from leaves...")
+            for i in range(n):
+                self.tree.update(i, float(old_leafs[i]))
+            self._size = min(self._size, self.capacity)
+            self._ptr  = self._ptr % self.capacity
         elif "priorities" in state:
             # Migration from old flat-array format to SumTree
             print(f"[Buffer] Migrating priorities from legacy format...")
             old_prios = state["priorities"]
-            for i in range(self._size):
+            for i in range(min(self._size, self.capacity, len(old_prios))):
                 self.tree.update(i, float(old_prios[i]))
 
 

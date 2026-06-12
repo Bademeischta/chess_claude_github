@@ -1145,7 +1145,13 @@ def main() -> None:
     # supervisor crash-restarts — so the pool's reference opponent was
     # silently replaced by the newest net (audit P7-1b). Never register
     # from --test: the integration tests must not mutate the pool.
-    if not args.test and not pool._pool:
+    # Defense-in-depth: ALSO require that no baseline file exists on disk.
+    # If pool_state.json is lost (manual cleanup, crash before first
+    # save_state) the in-memory pool is empty even though net_step0.pt
+    # holds the true random baseline — re-registering would overwrite it
+    # with the CURRENT (possibly far-trained) weights (audit NEW-1).
+    baseline_file = Path(CONFIG.checkpoint_dir) / "net_step0.pt"
+    if not args.test and not pool._pool and not baseline_file.exists():
         pool.register_current(model, step=0, elo=CONFIG.initial_elo)
 
     logger = TrainingLogger(
@@ -1170,14 +1176,13 @@ def main() -> None:
 
     # ── Resume from checkpoint ────────────────────────────────────────
     if args.resume:
+        # load_checkpoint() restores the buffers via Trainer._load_buffers
+        # (the single gzip snapshot path). The legacy `<stem>_replay.pkl`
+        # fallback that used to live here was dead (nothing writes that
+        # file any more) but ARMED: a stale pre-SumTree pickle would have
+        # rebound tree.tree without any capacity check, silently breaking
+        # the SumTree invariants after the good restore (audit NEW-3).
         trainer.load_checkpoint(args.resume)
-        # Also try to load buffers
-        buf_path = args.resume.replace(".pt", "_replay.pkl")
-        if Path(buf_path).exists():
-            replay_buffer.load(buf_path)
-        tch_path = args.resume.replace(".pt", "_teacher.pkl")
-        if Path(tch_path).exists():
-            teacher_buffer.load(tch_path)
         print(f"[main] Resumed from step {trainer.global_step}")
 
     # ── Integration tests ─────────────────────────────────────────────
