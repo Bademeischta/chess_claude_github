@@ -227,4 +227,66 @@ PYBIND11_MODULE(chess_ext, m) {
             return t.average_depth(t.get_root(), 0);
         })
         .def_readwrite("c_puct", &MCTSTree::c_puct);
+
+    // ── Canonical action encoding (C++ twin of move_to_action_index) ─────
+    m.def("az_action_index", &az_action_index,
+          py::arg("move"), py::arg("side_to_move"),
+          "AlphaZero 64x73 action index for a move in the canonical "
+          "(side-to-move) view; -1 if not encodable. Bit-equal to "
+          "engine/movegen.py::move_to_action_index.");
+
+    // ── RoundDriver — batched simulation round in C++ (GIL released) ────
+    py::class_<RoundDriver>(m, "RoundDriver")
+        .def(py::init<int>(), py::arg("num_actions"))
+        .def("select",
+             [](RoundDriver &d,
+                const std::vector<MCTSTree *> &trees,
+                const std::vector<MCTSNode *> &roots,
+                const std::vector<const Board *> &boards,
+                const std::vector<int> &fullmoves,
+                float contempt, float td_lambda, int td_start, int td_end,
+                py::array_t<float, py::array::c_style> out_boards,
+                py::array_t<uint8_t, py::array::c_style> out_pending,
+                int n_threads) {
+                 const int n = (int)trees.size();
+                 py::buffer_info bb = out_boards.request();
+                 py::buffer_info pb = out_pending.request();
+                 if (bb.size < (py::ssize_t)n * 21 * 64)
+                     throw std::invalid_argument(
+                         "RoundDriver.select: out_boards too small");
+                 if (pb.size < (py::ssize_t)n)
+                     throw std::invalid_argument(
+                         "RoundDriver.select: out_pending too small");
+                 float   *bptr = static_cast<float *>(bb.ptr);
+                 uint8_t *pptr = static_cast<uint8_t *>(pb.ptr);
+                 int pending;
+                 {
+                     py::gil_scoped_release release;
+                     pending = d.select(trees, roots, boards, fullmoves,
+                                        contempt, td_lambda, td_start,
+                                        td_end, bptr, pptr, n_threads);
+                 }
+                 return pending;
+             },
+             py::arg("trees"), py::arg("roots"), py::arg("boards"),
+             py::arg("fullmoves"), py::arg("contempt"),
+             py::arg("td_lambda"), py::arg("td_start"), py::arg("td_end"),
+             py::arg("out_boards"), py::arg("out_pending"),
+             py::arg("n_threads") = 0,
+             "Selection phase for all trees; resolves terminal leaves "
+             "inline and encodes pending boards. Returns pending count.")
+        .def("finish",
+             [](RoundDriver &d,
+                py::array_t<float, py::array::c_style> policy,
+                py::array_t<float, py::array::c_style> values,
+                int n_threads) {
+                 py::buffer_info pol = policy.request();
+                 py::buffer_info val = values.request();
+                 const float *pp = static_cast<const float *>(pol.ptr);
+                 const float *vp = static_cast<const float *>(val.ptr);
+                 py::gil_scoped_release release;
+                 d.finish(pp, vp, n_threads);
+             },
+             py::arg("policy"), py::arg("values"), py::arg("n_threads") = 0,
+             "Expansion+backup for the pending slots of the last select().");
 }

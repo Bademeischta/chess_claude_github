@@ -166,19 +166,20 @@ def _derive_config(gpu: dict, cpu: dict, ram: dict) -> dict:
     batch_size = min(1024, 2 ** int(math.log2(batch_size)))
 
     # ── Parallel games ─────────────────────────────────────────────────────
-    # Self-play MCTS is a mix of GPU-bound (NN forward) and CPU-bound (one
-    # `select_leaf_only` per tree in serial Python per simulation round).
-    # Measured sweep 2026-06-12 (RTX 5070, 23.2M net, CUDA-graph capture at
-    # pool width, pure self-play): 32 → 7.3k sims/s · 64 → 7.9k · 96 → 8.7k
-    # · 128 → 8.9k. The curve saturates near 96: GPU latency per position
-    # keeps falling with batch, but the serial per-tree Python/C++ work
-    # grows linearly and caps the win at ~1.2× vs 32 (NOT the 2-2.5× a
-    # GPU-only projection promised — the old "100+ trees collapsed
-    # throughput" warning was real and still binds). 96 is the sweet spot:
-    # within 1.5% of 128 while leaving VRAM/CPU headroom for the training
-    # interleave that this sweep deliberately excluded. ~110 MB/slot covers
-    # graph buffers + per-tree state on the measured configuration.
-    parallel_games = max(8, min(96, vram_free_mb // 110))
+    # Self-play MCTS mixes GPU work (NN forward) with per-tree CPU work
+    # (selection, prior gather, expand+backup). Since the C++ RoundDriver
+    # (config.cpp_round_driver) the CPU side runs GIL-free on a thread
+    # pool, so wide pools scale again. Measured sweeps 2026-06-12
+    # (RTX 5070, 23.2M net, CUDA-graph at pool width, pure self-play):
+    #   Python round loop: 32 → 7.3k · 96 → 8.7k · 128 → 8.9k sims/s
+    #     (saturated ~96; serial per-tree Python capped the win at ~1.2×)
+    #   C++ RoundDriver:   96 → 9.6k · 128 → 10.6k · 160 → 11.3k ·
+    #                      192 → 11.6k sims/s (still rising, flattening)
+    # Cap at 160: ≥97 % of the 192 throughput with fewer in-flight games
+    # and more VRAM/CPU headroom for the training interleave that the
+    # sweep deliberately excluded. ~64 MB/slot covers graph buffers +
+    # per-tree state on the measured configuration.
+    parallel_games = max(8, min(160, vram_free_mb // 64))
 
     # ── DataLoader workers ─────────────────────────────────────────────────
     dataloader_workers = max(2, min(8, log_cores // 3))

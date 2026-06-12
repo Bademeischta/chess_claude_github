@@ -830,6 +830,28 @@ class ParallelMCTS:
             (cfg.gru_history_len, cfg.input_planes, 8, 8), dtype=np.float32
         )
 
+        # ── C++ round driver ──────────────────────────────────────────
+        # Runs the whole select→(NN)→expand/backup round in C++ with the
+        # GIL released and a thread pool over trees. Measured motivation:
+        # at pool width 96 the GPU sits at ~8.7k sims/s while its inference
+        # ceiling is ~15k pos/s — the serial per-tree Python work (leaf
+        # selection, prior gather via move_to_action_index, expand+backup
+        # crossings) is the binding constraint. Tablebase probing stays
+        # Python-only, so the driver is bypassed when Syzygy is active.
+        self._round_driver = None
+        self._driver_boards = None
+        self._driver_pending = None
+        if _USE_CPP and bool(getattr(cfg, "cpp_round_driver", True)):
+            try:
+                self._round_driver = _cx.RoundDriver(int(cfg.num_actions))
+                self._driver_boards = np.zeros(
+                    (self.n, cfg.input_planes, 8, 8), dtype=np.float32)
+                self._driver_pending = np.zeros(self.n, dtype=np.uint8)
+            except Exception as e:  # noqa: BLE001
+                print(f"[ParallelMCTS] RoundDriver unavailable "
+                      f"({type(e).__name__}: {e}) — using Python round loop.")
+                self._round_driver = None
+
     @torch.inference_mode()
     def _batch_begin_search(
         self, active: List[int], boards: "List[Board]",
@@ -963,6 +985,22 @@ class ParallelMCTS:
             rounds = max(counts.values()) if counts else 0
             budget = counts
 
+        # ── C++ fast path: whole round (select → NN → expand/backup) in
+        # C++ with GIL released + thread pool. Bypassed when Syzygy is
+        # active (tablebase probing lives in Python) or after a driver
+        # error (fail open to the legacy loop below).
+        if self._round_driver is not None:
+            from engine.rules import is_tablebase_available
+            if not is_tablebase_available():
+                try:
+                    self._batched_sims_cpp(active, rounds, budget)
+                    return
+                except Exception as e:  # noqa: BLE001
+                    print(f"[ParallelMCTS] RoundDriver failed "
+                          f"({type(e).__name__}: {e}) — falling back to "
+                          f"Python round loop permanently.", flush=True)
+                    self._round_driver = None
+
         for s in range(rounds):
             pendings: List[Tuple[int, dict]] = []
             for i in active:
@@ -978,6 +1016,65 @@ class ParallelMCTS:
             values, logits = self._evaluate_batch(pendings)
             for k, (i, pending) in enumerate(pendings):
                 self.trees[i].apply_eval(pending, float(values[k]), logits[k])
+
+    def _batched_sims_cpp(self, active: List[int], rounds: int,
+                          budget: Optional[Dict[int, int]]) -> None:
+        """C++ round-driver variant of the loop above (same semantics)."""
+        cfg      = self.cfg
+        driver   = self._round_driver
+        contempt = float(getattr(cfg, "mcts_contempt", 0.0))
+        threads  = int(getattr(cfg, "cpp_round_threads", 0))
+        dtype    = self.trees[0]._net_dtype()
+
+        # Root node/board are CONSTANT across the rounds of one move —
+        # build the per-tree argument lists once (per active-set shape).
+        cur_idx: List[int] = []
+        trees_cpp: list = []
+        roots: list = []
+        boards: list = []
+        fullm: List[int] = []
+
+        def _rebuild(idxs: List[int]) -> None:
+            cur_idx[:] = idxs
+            trees_cpp[:] = [self.trees[i]._cpp_tree for i in idxs]
+            roots[:]     = [self.trees[i]._root_node for i in idxs]
+            boards[:]    = [self.trees[i]._root_board._b for i in idxs]
+            fullm[:]     = [int(self.trees[i]._root_board.fullmove_number)
+                            for i in idxs]
+
+        for s in range(rounds):
+            idxs = [i for i in active
+                    if budget is None or s < budget[i]]
+            if not idxs:
+                continue
+            if idxs != cur_idx:
+                _rebuild(idxs)
+            m = len(idxs)
+
+            n_pending = driver.select(
+                trees_cpp, roots, boards, fullm,
+                contempt, cfg.td_lambda,
+                cfg.td_lambda_start_move, cfg.td_lambda_end_move,
+                self._driver_boards[:m], self._driver_pending[:m],
+                threads,
+            )
+            if n_pending == 0:
+                continue
+
+            pend = np.flatnonzero(self._driver_pending[:m])
+            bt = self._driver_boards[pend]                       # (P,21,8,8)
+            ht = np.stack([self.trees[idxs[j]].history_np()
+                           for j in pend])
+
+            board_t = torch.from_numpy(bt).to(self.device, dtype)
+            hist_t  = torch.from_numpy(ht).to(self.device, dtype)
+            policy_logits, values = self.engine.infer(board_t, hist_t)
+
+            logits_np = np.ascontiguousarray(
+                policy_logits.to("cpu", torch.float32).numpy())
+            values_np = np.ascontiguousarray(
+                values.to("cpu", torch.float32).numpy())
+            driver.finish(logits_np, values_np, threads)
 
     def _fresh_board(self) -> "Board":
         """

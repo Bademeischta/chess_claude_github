@@ -166,6 +166,18 @@ class ChessAIConfig:
     dca_q_threshold: float = 0.05  # |Q1-Q2| below this → use sims_critical
     dca_check_mult: float = 1.5    # Sim multiplier when in check
 
+    # ── C++ round driver (self-play hot loop) ────────────────────────────
+    # Run each batched simulation round (selection → NN → expand/backup)
+    # entirely in C++ with the GIL released and a thread pool over trees.
+    # Motivation (measured 2026-06-12): at pool width 96 the Python round
+    # loop caps throughput at ~8.7k sims/s while GPU inference alone
+    # sustains ~15k pos/s — the serial per-tree Python work is the binding
+    # constraint. Automatically bypassed while Syzygy tablebases are active
+    # (probing lives in Python) and on any driver error (fail-open to the
+    # legacy loop).
+    cpp_round_driver: bool = True
+    cpp_round_threads: int = 0     # 0 = auto (min(8, cores/2))
+
     # ── Self-play ────────────────────────────────────────────────────────
     parallel_games: int = 6  # hw-derived
     temperature_moves: int = 30    # τ=1.0 for first N moves, then τ→0

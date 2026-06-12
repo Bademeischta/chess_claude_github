@@ -104,4 +104,60 @@ private:
     std::unique_ptr<MCTSNode> root;
 };
 
+// ── AlphaZero action encoding (canonical, side-to-move view) ─────────────
+// C++ twin of engine/movegen.py::move_to_action_index — MUST stay bit-equal
+// (pinned by tests/test_round_driver.py parity test). Black squares are
+// vertically flipped (sq ^ 56) to match the canonical board encoding.
+int az_action_index(chess::Move m, int side_to_move);
+
+// ── RoundDriver — one batched simulation round entirely in C++ ──────────
+//
+// Replaces the per-tree Python loop in ParallelMCTS._batched_sims:
+//   select():  for every tree, run selection (virtual loss applied),
+//              resolve terminal/draw leaves inline (mark/expand + backup),
+//              and encode pending leaf boards into a caller-provided
+//              (N, 21, 8, 8) float32 buffer. Returns a pending mask.
+//   finish():  consume the network's (P, num_actions) policy logits and
+//              (P,) values for the pending slots in mask order — compute
+//              legal-move priors (canonical action gather + softmax),
+//              expand and back up.
+// Both phases release the GIL and fan out over a thread pool; trees are
+// disjoint, so per-tree work is data-race-free by construction.
+class RoundDriver {
+public:
+    explicit RoundDriver(int num_actions);
+
+    // Returns number of pending (NN-needed) slots. out_boards must hold
+    // trees.size() * 21 * 64 floats; out_pending trees.size() bytes.
+    int select(const std::vector<MCTSTree *> &trees,
+               const std::vector<MCTSNode *> &roots,
+               const std::vector<const chess::Board *> &boards,
+               const std::vector<int> &fullmove_numbers,
+               float contempt,
+               float td_lambda, int td_start, int td_end,
+               float *out_boards, uint8_t *out_pending,
+               int n_threads);
+
+    // policy: (P, num_actions) float32, values: (P,) float32 — rows in the
+    // order of pending slots from the preceding select() call.
+    void finish(const float *policy, const float *values, int n_threads);
+
+private:
+    struct Slot {
+        std::vector<MCTSNode *> path;
+        MCTSNode    *leaf = nullptr;
+        chess::Board board;
+        chess::MoveList legal;     // cached from select (reused in finish)
+        int  fullmove = 0;
+        bool pending  = false;
+    };
+    std::vector<Slot> slots_;
+    std::vector<int>  pending_idx_;   // slot index per policy row
+    std::vector<MCTSTree *> trees_;   // borrowed for the finish phase
+    int   num_actions_;
+    float td_lambda_ = 0.8f;
+    int   td_start_  = 5;
+    int   td_end_    = 25;
+};
+
 } // namespace mcts

@@ -18,11 +18,16 @@
 #include "chess_core.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <stdexcept>
+#include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -333,6 +338,230 @@ float MCTSTree::average_depth(MCTSNode *node, int depth) const {
     for (const auto &[mv, child] : node->children)
         total += average_depth(child.get(), depth + 1);
     return total / (float)node->children.size();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  AlphaZero action encoding — C++ twin of movegen.py::move_to_action_index
+// ══════════════════════════════════════════════════════════════════════════
+
+int az_action_index(chess::Move m, int side_to_move) {
+    int from  = (int)(m & 0x3F);
+    int to    = (int)((m >> 6) & 0x3F);
+    int flags = (int)((m >> 12) & 0xF);
+
+    // Canonical (side-to-move) view: vertical flip for Black, matching
+    // Board::to_tensor and the Python encoder (audit F1).
+    if (side_to_move == 1) { from ^= 56; to ^= 56; }
+
+    const int fr = from >> 3, ff = from & 7;
+    const int tr = to >> 3,   tf = to & 7;
+    const int dr = tr - fr,   df = tf - ff;
+
+    constexpr int CH_PER_SQ = 73;
+    constexpr int Q_CH = 56, K_CH = 8;
+
+    // Underpromotions (N/B/R, quiet + capture): channels 64-72
+    if (flags == 8 || flags == 9 || flags == 10 ||
+        flags == 12 || flags == 13 || flags == 14) {
+        int piece_idx = (flags == 8 || flags == 12) ? 0
+                      : (flags == 9 || flags == 13) ? 1 : 2;  // N, B, R
+        int dir_idx = (df == -1) ? 0 : (df == 0) ? 1 : 2;
+        int channel = Q_CH + K_CH + piece_idx * 3 + dir_idx;
+        return from * CH_PER_SQ + channel;
+    }
+
+    // Knight moves: channels 56-63
+    static constexpr int KOFF[8][2] = {
+        {2, 1}, {2, -1}, {-2, 1}, {-2, -1},
+        {1, 2}, {1, -2}, {-1, 2}, {-1, -2},
+    };
+    for (int i = 0; i < 8; ++i)
+        if (dr == KOFF[i][0] && df == KOFF[i][1])
+            return from * CH_PER_SQ + Q_CH + i;
+
+    // Sliding moves (queen promos included — same as a rank-8 queen move):
+    // channels 0-55 (8 dirs × 7 distances)
+    int dist = std::max(std::abs(dr), std::abs(df));
+    if (dist == 0) return -1;
+    if (dr != 0 && df != 0 && std::abs(dr) != std::abs(df)) return -1;
+    const int ndr = dr ? dr / dist : 0;
+    const int ndf = df ? df / dist : 0;
+    static constexpr int QDIR[8][2] = {
+        {0, 1}, {0, -1}, {1, 0}, {-1, 0},
+        {1, 1}, {1, -1}, {-1, 1}, {-1, -1},
+    };
+    for (int d = 0; d < 8; ++d)
+        if (ndr == QDIR[d][0] && ndf == QDIR[d][1])
+            return from * CH_PER_SQ + d * 7 + (dist - 1);
+
+    return -1;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  RoundDriver — one batched simulation round entirely in C++
+// ══════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Simple fork-join over [0, n): trees are disjoint so per-index work is
+// data-race-free. Exceptions are captured and rethrown on the caller thread.
+template <typename Fn>
+void parallel_for(int n, int n_threads, Fn &&fn) {
+    if (n <= 0) return;
+    int hw = (int)std::thread::hardware_concurrency();
+    if (n_threads <= 0) n_threads = std::max(1, std::min(8, hw / 2));
+    n_threads = std::min(n_threads, n);
+    if (n_threads <= 1) {
+        for (int i = 0; i < n; ++i) fn(i);
+        return;
+    }
+    std::atomic<int> next{0};
+    std::vector<std::thread> pool;
+    std::mutex err_mu;
+    std::string err;
+    pool.reserve((size_t)n_threads);
+    for (int t = 0; t < n_threads; ++t) {
+        pool.emplace_back([&]() {
+            try {
+                int i;
+                while ((i = next.fetch_add(1)) < n) fn(i);
+            } catch (const std::exception &e) {
+                std::lock_guard<std::mutex> lk(err_mu);
+                if (err.empty()) err = e.what();
+            } catch (...) {
+                std::lock_guard<std::mutex> lk(err_mu);
+                if (err.empty()) err = "unknown error in RoundDriver worker";
+            }
+        });
+    }
+    for (auto &th : pool) th.join();
+    if (!err.empty()) throw std::runtime_error(err);
+}
+
+} // namespace
+
+RoundDriver::RoundDriver(int num_actions) : num_actions_(num_actions) {}
+
+int RoundDriver::select(const std::vector<MCTSTree *> &trees,
+                        const std::vector<MCTSNode *> &roots,
+                        const std::vector<const chess::Board *> &boards,
+                        const std::vector<int> &fullmove_numbers,
+                        float contempt,
+                        float td_lambda, int td_start, int td_end,
+                        float *out_boards, uint8_t *out_pending,
+                        int n_threads) {
+    const int n = (int)trees.size();
+    if ((int)roots.size() != n || (int)boards.size() != n ||
+        (int)fullmove_numbers.size() != n) {
+        throw std::invalid_argument(
+            "RoundDriver::select: trees/roots/boards/fullmoves length mismatch");
+    }
+    td_lambda_ = td_lambda;
+    td_start_  = td_start;
+    td_end_    = td_end;
+    trees_     = trees;
+    slots_.clear();
+    slots_.resize((size_t)n);
+    std::fill(out_pending, out_pending + n, (uint8_t)0);
+
+    parallel_for(n, n_threads, [&](int k) {
+        Slot &s = slots_[(size_t)k];
+        SelectionResult res = trees[k]->select_leaf(roots[k], *boards[k]);
+        s.path     = std::move(res.path);
+        s.leaf     = res.leaf;
+        s.board    = std::move(res.board);
+        s.fullmove = fullmove_numbers[k];
+        s.legal    = s.board.legal_moves();
+
+        // Terminal / draw resolution — semantics of Python's
+        // _resolve_non_nn + _finish_leaf, WITHOUT touching the
+        // is_checkmate/is_stalemate predicates (their internal re-movegen
+        // is the known native-crash path; legal.empty() + in_check() is
+        // equivalent and safe):
+        //   mate       (no legal, in check)  → value −1 for the mover
+        //   stalemate  (no legal, no check)  → draw  (−contempt)
+        //   fifty/threefold/insufficient     → draw  (−contempt),
+        //     expanded with uniform priors when legal moves exist
+        //     (preserves draw-with-legal-moves behaviour).
+        bool  over  = false;
+        float value = 0.0f;
+        if (s.legal.empty()) {
+            over  = true;
+            value = s.board.in_check() ? -1.0f : -contempt;
+        } else if (s.board.is_draw()) {
+            over  = true;
+            value = -contempt;
+        }
+
+        if (over) {
+            if (s.leaf->terminal || s.legal.empty()) {
+                trees[k]->mark_terminal(s.leaf, value);
+            } else {
+                std::vector<float> uniform(
+                    s.legal.size(), 1.0f / (float)s.legal.size());
+                trees[k]->expand(s.leaf, s.legal, uniform);
+            }
+            trees[k]->backup(s.path, value, td_lambda_, s.fullmove,
+                             td_start_, td_end_);
+            s.pending = false;
+            return;
+        }
+
+        s.pending = true;
+        out_pending[k] = 1;
+        s.board.to_tensor(out_boards + (size_t)k * 21 * 64);
+    });
+
+    pending_idx_.clear();
+    for (int k = 0; k < n; ++k)
+        if (slots_[(size_t)k].pending) pending_idx_.push_back(k);
+    return (int)pending_idx_.size();
+}
+
+void RoundDriver::finish(const float *policy, const float *values,
+                         int n_threads) {
+    const int p = (int)pending_idx_.size();
+
+    parallel_for(p, n_threads, [&](int r) {
+        const int k  = pending_idx_[(size_t)r];
+        Slot     &s  = slots_[(size_t)k];
+        MCTSTree *t  = trees_[(size_t)k];
+        const float *row = policy + (size_t)r * (size_t)num_actions_;
+        const float  val = values[r];
+
+        // Priors — same numerics as policy_array_to_legal_priors():
+        // gather (missing index → −1e9), max-subtract, softmax,
+        // degenerate-sum → uniform.
+        const size_t L = s.legal.size();
+        std::vector<float> logits(L), priors(L);
+        const int stm = s.board.side_to_move;
+        float mx = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < L; ++i) {
+            int idx = az_action_index(s.legal[i], stm);
+            float lg = (idx >= 0 && idx < num_actions_) ? row[idx] : -1e9f;
+            logits[i] = lg;
+            if (lg > mx) mx = lg;
+        }
+        float sum = 0.0f;
+        for (size_t i = 0; i < L; ++i) {
+            priors[i] = std::exp(logits[i] - mx);
+            sum += priors[i];
+        }
+        if (sum <= 0.0f || !std::isfinite(sum)) {
+            std::fill(priors.begin(), priors.end(), 1.0f / (float)L);
+        } else {
+            for (auto &q : priors) q /= sum;
+        }
+
+        if (s.leaf->terminal || s.legal.empty()) {
+            t->mark_terminal(s.leaf, val);
+        } else {
+            t->expand(s.leaf, s.legal, priors);
+        }
+        t->backup(s.path, val, td_lambda_, s.fullmove, td_start_, td_end_);
+    });
+
+    pending_idx_.clear();
 }
 
 } // namespace mcts
