@@ -71,6 +71,9 @@ from engine.rules import init_tablebase
 # ── Graceful shutdown ────────────────────────────────────────────────────
 
 _trainer_ref = None
+# Adaptive load throttle (utils/load_governor.py) — created in main() when
+# CONFIG.throttle_enabled; the phase loops call maybe_throttle() per batch.
+_governor = None
 
 def _sigint_handler(sig, frame):
     print("\n[main] Interrupt received — saving checkpoint before exit...")
@@ -699,6 +702,7 @@ def phase_selfplay(
     gates: dict = {"arena": trainer.global_step, "register": trainer.global_step}
 
     while games < max_games:
+        _t_iter = time.time()
         # Ramp sims back up once the model has seen real training signal
         if CONFIG.mcts_sims < _orig_sims and trainer.global_step >= _ramp_step:
             CONFIG.mcts_sims         = _orig_sims
@@ -750,6 +754,11 @@ def phase_selfplay(
 
         logger.log_throughput(pos_s, g_hr, trainer.global_step)
 
+        # Adaptive throttle: if the user launched something GPU-heavy (a
+        # game), back off to the configured duty cycle until it's gone.
+        if _governor is not None:
+            _governor.maybe_throttle(time.time() - _t_iter)
+
         if pool.current_elo() >= target_elo:
             print(f"[Phase 1] ELO target {target_elo:.0f} reached!")
             break
@@ -774,6 +783,7 @@ def phase_distillation(
     gates: dict = {"arena": trainer.global_step}
     _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
+        _t_iter = time.time()
         batch_num += 1
         n_new = worker.generate_batch(n_games=CONFIG.parallel_games)
         games += CONFIG.parallel_games
@@ -790,6 +800,9 @@ def phase_distillation(
         if _interval_crossed(gates, "arena", trainer.global_step,
                              CONFIG.arena_every_n_steps) and pool._pool:
             _run_arena_and_update(trainer, model, pool, logger)
+
+        if _governor is not None:
+            _governor.maybe_throttle(time.time() - _t_iter)
 
         if pool.current_elo() >= target_elo:
             print(f"[Phase 2] ELO target {target_elo:.0f} reached!")
@@ -826,6 +839,7 @@ def phase_refinement(
     gates: dict = {"arena": trainer.global_step}
     _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
+        _t_iter = time.time()
         batch_num += 1
         n_new = worker.generate_batch(n_games=CONFIG.parallel_games)
         games += CONFIG.parallel_games
@@ -842,6 +856,9 @@ def phase_refinement(
         if _interval_crossed(gates, "arena", trainer.global_step,
                              CONFIG.arena_every_n_steps) and pool._pool:
             _run_arena_and_update(trainer, model, pool, logger)
+
+        if _governor is not None:
+            _governor.maybe_throttle(time.time() - _t_iter)
 
         if pool.current_elo() >= target_elo:
             print(f"[Phase 3] ELO target {target_elo:.0f} reached!")
@@ -1173,6 +1190,21 @@ def main() -> None:
                       pool, logger, device)
     global _trainer_ref
     _trainer_ref = trainer
+
+    # ── Adaptive load throttle ────────────────────────────────────────
+    global _governor
+    if getattr(CONFIG, "throttle_enabled", False):
+        from utils.load_governor import LoadGovernor
+        _governor = LoadGovernor(
+            enabled=True,
+            foreign_vram_mb=CONFIG.throttle_foreign_vram_mb,
+            duty=CONFIG.throttle_duty,
+            check_every_s=CONFIG.throttle_check_every_s,
+        )
+        print(f"[main] Load governor active: throttles to "
+              f"{CONFIG.throttle_duty:.0%} duty when foreign GPU load "
+              f"exceeds {CONFIG.throttle_foreign_vram_mb:.0f} MB "
+              f"(e.g. a game is running).")
 
     # ── Resume from checkpoint ────────────────────────────────────────
     if args.resume:

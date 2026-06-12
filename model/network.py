@@ -122,16 +122,25 @@ class ChessNet(nn.Module):
         self.history_len    = history_len
         self.grad_ckpt_from = grad_ckpt_from
 
-        total_input = input_planes + gru_context  # 25
+        # GRU ablation switch (audit F-GRU): gru_context=0 builds the net
+        # WITHOUT the history encoder — forward then ignores any history
+        # passed in. This gives a clean architecture A/B (does the GRU buy
+        # strength?) without touching the data/inference plumbing. The GRU
+        # is also an fp32 island costing ~12 % forward latency at batch 32.
+        self.gru_context = gru_context
+        total_input = input_planes + gru_context  # 25 (21 when ablated)
 
-        # ── GRU History Encoder ────────────────────────
-        self.gru_encoder = GRUHistoryEncoder(
-            input_planes=input_planes,
-            hidden_size=gru_hidden,
-            num_layers=gru_layers,
-            history_len=history_len,
-            output_planes=gru_context,
-        )
+        # ── GRU History Encoder (None when ablated) ────
+        if gru_context > 0:
+            self.gru_encoder = GRUHistoryEncoder(
+                input_planes=input_planes,
+                hidden_size=gru_hidden,
+                num_layers=gru_layers,
+                history_len=history_len,
+                output_planes=gru_context,
+            )
+        else:
+            self.gru_encoder = None
 
         # ── Input projection: 25 → 256 channels ───────
         self.input_proj = nn.Sequential(
@@ -191,7 +200,10 @@ class ChessNet(nn.Module):
                                       value_head.wdl_probs / scalar_value)
             aux:           (B, 1)     tanh scalar
         """
-        if history is not None:
+        if self.gru_encoder is None:
+            # GRU-ablated build: history (if any) is deliberately ignored.
+            x = board                                     # (B, 21, 8, 8)
+        elif history is not None:
             context = self.gru_encoder(history)           # (B, 4, 8, 8)
             x = torch.cat([board, context], dim=1)        # (B, 25, 8, 8)
         else:
@@ -202,17 +214,14 @@ class ChessNet(nn.Module):
             x = torch.cat([board, pad], dim=1)            # (B, 25, 8, 8)
 
         # Material differential from board planes, oriented to side-to-move.
-        # Planes 0-5 = white {P,N,B,R,Q,K} counts (each cell is 0/1).
-        # Planes 6-11 = black {P,N,B,R,Q,K}.
-        # Plane 12 = side-to-move flag (broadcast: 1.0 if white-to-move, else 0).
-        # We orient the diff so positive ⇒ side-to-move is ahead in material,
-        # matching the WDL label convention.
-        white_count = board[:, 0:6].sum(dim=(2, 3))        # (B, 6)
-        black_count = board[:, 6:12].sum(dim=(2, 3))       # (B, 6)
-        # Side-to-move: take a single cell; the plane is broadcast-constant.
-        stm_white = board[:, 12, 0, 0]                     # (B,)
-        sign = (stm_white * 2.0 - 1.0).unsqueeze(1)        # (B, 1): +1 / -1
-        material_diff = (white_count - black_count) * sign  # (B, 6)
+        # CANONICAL encoding (audit F1): planes 0-5 are ALWAYS the mover's
+        # {P,N,B,R,Q,K}, planes 6-11 the opponent's — the tensor is flipped
+        # for Black at encode time, so own − opp is already mover-oriented.
+        # (The old stm-sign flip belonged to the White-view encoding and
+        # would double-negate Black positions under canonicalisation.)
+        own_count = board[:, 0:6].sum(dim=(2, 3))          # (B, 6)
+        opp_count = board[:, 6:12].sum(dim=(2, 3))         # (B, 6)
+        material_diff = own_count - opp_count               # (B, 6)
 
         x = self.input_proj(x)  # (B, 256, 8, 8)
 
@@ -266,7 +275,8 @@ class ChessNet(nn.Module):
         Returns a list of parameter-group dicts for AdamW with separate
         learning rates for backbone / heads / GRU encoder.
         """
-        gru_params   = list(self.gru_encoder.parameters())
+        gru_params   = (list(self.gru_encoder.parameters())
+                        if self.gru_encoder is not None else [])
         head_params  = (list(self.policy_head.parameters())
                       + list(self.value_head.parameters()))
         backbone_params = [
@@ -274,11 +284,14 @@ class ChessNet(nn.Module):
             if not any(p is q for q in gru_params)
             and not any(p is q for q in head_params)
         ]
-        return [
+        groups = [
             {"params": backbone_params, "lr": lr * backbone_mult, "name": "backbone"},
             {"params": head_params,     "lr": lr * head_mult,     "name": "heads"},
-            {"params": gru_params,      "lr": lr * gru_mult,      "name": "gru"},
         ]
+        if gru_params:
+            groups.append(
+                {"params": gru_params, "lr": lr * gru_mult, "name": "gru"})
+        return groups
 
     def param_count(self) -> int:
         return sum(p.numel() for p in self.parameters())
@@ -295,9 +308,17 @@ def build_model(cfg, compile_model: bool = True) -> ChessNet:
     if gc_from is None:
         gc_from = 4 if cfg.num_res_blocks > 14 else cfg.num_res_blocks
 
+    # GRU ablation (config.use_gru_history=False): build without the history
+    # encoder — input stays at 21 planes and any history passed to
+    # forward()/infer() is ignored. Data plumbing is unchanged so the flag
+    # is a pure architecture A/B; flip it only on a FRESH run (checkpoints
+    # from the other arm have a different input_proj shape).
+    gru_planes = (cfg.gru_context_planes
+                  if getattr(cfg, "use_gru_history", True) else 0)
+
     net = ChessNet(
         input_planes  = cfg.input_planes,
-        gru_context   = cfg.gru_context_planes,
+        gru_context   = gru_planes,
         channels      = cfg.num_channels,
         num_blocks    = cfg.num_res_blocks,
         se_every      = cfg.se_every_n,
@@ -327,7 +348,8 @@ def build_model(cfg, compile_model: bool = True) -> ChessNet:
     # The GRU history encoder must stay fp32: cuDNN won't use the contiguous
     # RNN fast path for bf16 weights (flatten_parameters() no-ops and it
     # recompacts on every forward). Its forward disables autocast internally.
-    net.gru_encoder.float()
+    if net.gru_encoder is not None:
+        net.gru_encoder.float()
 
     # NOTE: a channels_last memory-format pass was tried and reverted —
     # on 8×8 spatial dims the NHWC kernels don't actually win, and the

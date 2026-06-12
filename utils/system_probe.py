@@ -167,14 +167,18 @@ def _derive_config(gpu: dict, cpu: dict, ram: dict) -> dict:
 
     # ── Parallel games ─────────────────────────────────────────────────────
     # Self-play MCTS is a mix of GPU-bound (NN forward) and CPU-bound (one
-    # `select_leaf_only` per tree in serial Python per simulation round). The
-    # old VRAM-only heuristic spun up ≥100 trees on a 12 GB card, which
-    # collapsed throughput: the per-tree Python overhead between forwards
-    # dominated total wall time. A pool of ~16-32 fills RTX 5070's NN-forward
-    # comfortably while keeping the Python overhead bounded — measured
-    # 5-10× higher pos/s vs. a 100+ pool. Use the smaller of "what VRAM can
-    # hold" and "what CPU can drive at sane Python overhead".
-    parallel_games = max(8, min(32, vram_free_mb // 256))
+    # `select_leaf_only` per tree in serial Python per simulation round).
+    # Measured sweep 2026-06-12 (RTX 5070, 23.2M net, CUDA-graph capture at
+    # pool width, pure self-play): 32 → 7.3k sims/s · 64 → 7.9k · 96 → 8.7k
+    # · 128 → 8.9k. The curve saturates near 96: GPU latency per position
+    # keeps falling with batch, but the serial per-tree Python/C++ work
+    # grows linearly and caps the win at ~1.2× vs 32 (NOT the 2-2.5× a
+    # GPU-only projection promised — the old "100+ trees collapsed
+    # throughput" warning was real and still binds). 96 is the sweet spot:
+    # within 1.5% of 128 while leaving VRAM/CPU headroom for the training
+    # interleave that this sweep deliberately excluded. ~110 MB/slot covers
+    # graph buffers + per-tree state on the measured configuration.
+    parallel_games = max(8, min(96, vram_free_mb // 110))
 
     # ── DataLoader workers ─────────────────────────────────────────────────
     dataloader_workers = max(2, min(8, log_cores // 3))

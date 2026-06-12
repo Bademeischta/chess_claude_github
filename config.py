@@ -52,6 +52,13 @@ class ChessAIConfig:
     gru_hidden: int = 256          # GRU hidden state dimension
     gru_layers: int = 2            # GRU depth
     gru_history_len: int = 8       # How many past boards to feed the GRU
+    # GRU ablation switch (audit F-GRU): False builds the net WITHOUT the
+    # history encoder (input stays 21 planes; history inputs are ignored).
+    # The GRU is an fp32 island costing ~12 % forward latency and its
+    # train/inference history convention has historically been a bug
+    # magnet — this flag enables a clean strength A/B between two fresh
+    # runs. Checkpoints are NOT compatible across the two settings.
+    use_gru_history: bool = True
     # Policy head: AlphaZero encoding 64×73 = 4672 source×action planes
     num_actions: int = 4672
     # Policy-head bottleneck width (Conv2d output channels). 32 is a memory-
@@ -325,6 +332,17 @@ class ChessAIConfig:
     # ── ELO tracking ────────────────────────────────────────────────────
     initial_elo: float = 1000.0
     elo_k_factor: float = 32.0
+
+    # ── Adaptive load throttle (utils/load_governor.py) ─────────────────
+    # When ANOTHER process starts using the GPU heavily (e.g. a game is
+    # launched), training throttles itself to `throttle_duty` duty cycle
+    # and resumes full speed automatically once the load is gone.
+    # Detection: foreign VRAM (total used minus our own) rising more than
+    # `throttle_foreign_vram_mb` above the startup baseline.
+    throttle_enabled: bool = True
+    throttle_foreign_vram_mb: float = 1000.0  # game ≈ +1.5–8 GB; browser tab ≈ +0.1
+    throttle_duty: float = 0.25               # work 25 % of wall time while throttled
+    throttle_check_every_s: float = 5.0
 
     # ── Reproducibility ──────────────────────────────────────────────────
     # 0 = unseeded (fresh entropy each run). Any other value seeds torch,

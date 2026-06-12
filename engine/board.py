@@ -245,25 +245,35 @@ else:
             return obj
 
         def to_tensor(self) -> np.ndarray:
+            # CANONICAL (side-to-move) encoding — audit F1. Mirrors the C++
+            # backend exactly: Black to move → vertical flip (sq ^ 56) and
+            # colour-block swap, so planes 0-5 are always "my pieces",
+            # 6-11 the opponent's; 14-15 my castling, 16-17 theirs.
             out = np.zeros((21, 8, 8), dtype=np.float32)
+            us   = self._b.turn          # python-chess: True = White
+            flip = not us
+            def canon(sq: int) -> int:
+                return sq ^ 56 if flip else sq
             piece_map = self._b.piece_map()
             for sq, piece in piece_map.items():
-                color = 0 if piece.color else 1
+                own   = 0 if piece.color == us else 1
                 ptype = piece.piece_type - 1  # python-chess uses 1-6
-                plane_idx = color * 6 + ptype
-                r, f = sq // 8, sq % 8
+                plane_idx = own * 6 + ptype
+                csq = canon(sq)
+                r, f = csq // 8, csq % 8
                 out[plane_idx, r, f] = 1.0
-            # Side to move
+            # Side to move (colour identity)
             if self._b.turn: out[12] = 1.0
-            # En passant
+            # En passant (canonical coords)
             if self._b.ep_square is not None:
-                r, f = self._b.ep_square // 8, self._b.ep_square % 8
+                csq = canon(self._b.ep_square)
+                r, f = csq // 8, csq % 8
                 out[13, r, f] = 1.0
-            # Castling
-            if self._b.has_kingside_castling_rights(_pychess.WHITE):  out[14] = 1.0
-            if self._b.has_queenside_castling_rights(_pychess.WHITE): out[15] = 1.0
-            if self._b.has_kingside_castling_rights(_pychess.BLACK):  out[16] = 1.0
-            if self._b.has_queenside_castling_rights(_pychess.BLACK): out[17] = 1.0
+            # Castling: own rights → 14/15, opponent's → 16/17
+            if self._b.has_kingside_castling_rights(us):       out[14] = 1.0
+            if self._b.has_queenside_castling_rights(us):      out[15] = 1.0
+            if self._b.has_kingside_castling_rights(not us):   out[16] = 1.0
+            if self._b.has_queenside_castling_rights(not us):  out[17] = 1.0
             out[18] = min(self._b.halfmove_clock, 100) / 100.0
             out[19] = min(self._b.fullmove_number, 200) / 200.0
             # Plane 20: position occurred before (repetition marker). The

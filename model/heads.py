@@ -10,9 +10,11 @@ Policy head:
 
 Value head:
     Input:  (B, 256, 8, 8) feature map
-    Output: (B, 3)  WDL probabilities [win, draw, loss]
-    Also:   (B, 1)  auxiliary scalar for phase supervision (active only
-            during the first `aux_steps` training steps)
+    Output: (B, 3)  WDL LOGITS [win, draw, loss] — raw, no softmax (the
+            trainer applies cross-entropy on logits; use wdl_probs() /
+            scalar_value() for probabilities)
+    Also:   (B, 1)  auxiliary scalar (learnable material-balance regressor,
+            active for the full run)
 """
 
 from __future__ import annotations

@@ -80,3 +80,33 @@ def test_value_head_material_scale_in_state_dict():
     h2 = ValueHead(material_scale=99.0)
     h2.load_state_dict(sd)
     assert float(h2._material_scale) == pytest.approx(7.5)
+
+
+def test_gru_ablation_build_and_forward():
+    """use_gru_history=False builds a 21-plane net that ignores history
+    (audit F-GRU). Both arms must produce correct shapes; the ablated arm
+    must give identical outputs with and without a history tensor."""
+    import copy
+    import torch
+    from config import CONFIG
+    from model.network import build_model
+
+    cfg = copy.deepcopy(CONFIG)
+    cfg.device = "cpu"
+    cfg.precision = "fp32"
+    cfg.torch_compile = False
+    cfg.num_res_blocks = 2
+    cfg.use_gru_history = False
+
+    net = build_model(cfg, compile_model=False)
+    assert net.gru_encoder is None
+    b = torch.randn(2, 21, 8, 8)
+    h = torch.randn(2, 4, 21, 8, 8)
+    p1, w1, a1 = net(b, None)
+    p2, w2, a2 = net(b, h)          # history must be ignored
+    assert p1.shape == (2, cfg.num_actions) and w1.shape == (2, 3)
+    assert torch.allclose(p1, p2) and torch.allclose(w1, w2)
+    # param groups: no empty "gru" group (OneCycleLR would choke on it)
+    groups = net.parameter_groups(1e-3)
+    assert all(g["params"] for g in groups)
+    assert {g["name"] for g in groups} == {"backbone", "heads"}

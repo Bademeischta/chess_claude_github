@@ -73,11 +73,17 @@ def move_to_action_index(move: int, side_to_move: int) -> int:
     to_sq   = (move >> 6) & 0x3F
     flags   = (move >> 12) & 0xF
 
-    # From AlphaZero's perspective, the board is always from the current player's view.
-    # We flip the board for Black so that the policy head always sees the same orientation.
+    # CANONICAL (side-to-move) action space — audit F1. For Black the squares
+    # are vertically flipped (sq ^ 56: rank mirror, files preserved) so a
+    # Black move maps to the index its colour-conjugated White twin would
+    # get — e7e5 ↔ e2e4, e8g8 castling ↔ e1g1. This matches the board
+    # canonicalisation in to_tensor (both backends). The previous 63-sq
+    # (180° rotation) also mirrored files, which broke pattern sharing for
+    # the file-asymmetric castling moves and never matched the board tensor
+    # (which was always White-view — the policy had to learn two mappings).
     if side_to_move == 1:  # BLACK
-        from_sq = 63 - from_sq
-        to_sq   = 63 - to_sq
+        from_sq = from_sq ^ 56
+        to_sq   = to_sq ^ 56
 
     fr, ff = _sq_to_rf(from_sq)
     tr, tf = _sq_to_rf(to_sq)

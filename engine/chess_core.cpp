@@ -1081,33 +1081,51 @@ int Board::get_phase() const {
 
 void Board::to_tensor(float *out) const {
     // out must point to 21*64 floats (allocated by caller)
+    //
+    // CANONICAL (side-to-move) ENCODING — audit F1:
+    // The board is always encoded from the CURRENT PLAYER's perspective:
+    // when Black is to move, ranks are mirrored (sq ^ 56, a vertical flip
+    // that preserves files — the chess-correct colour conjugation, matching
+    // Lc0/AlphaZero) and the colour blocks swap, so planes 0-5 are always
+    // "my pieces" and 6-11 "opponent pieces"; 14-15 my castling rights,
+    // 16-17 the opponent's. The action encoding in engine/movegen.py uses
+    // the SAME sq^56 transform for Black, so policy inputs and outputs
+    // share one orientation. White positions encode exactly as before.
+    // Plane 12 still carries the true colour to move.
     std::fill(out, out + 21 * 64, 0.0f);
 
     auto plane = [&](int p) -> float* { return out + p * 64; };
+    const bool flip = (side_to_move != WHITE);
+    auto canon = [&](int sq) -> int { return flip ? (sq ^ 56) : sq; };
 
-    // Planes 0-11: piece bitboards
+    // Planes 0-5: side-to-move pieces; 6-11: opponent pieces
     for (int p = 0; p < 12; ++p) {
+        const int dst = flip ? ((p + 6) % 12) : p;
         Bitboard bb = pieces[p];
         while (bb) {
             int sq = lsb(bb); bb &= bb - 1;
-            plane(p)[sq] = 1.0f;
+            plane(dst)[canon(sq)] = 1.0f;
         }
     }
 
-    // Plane 12: side to move (1.0 = white to move)
+    // Plane 12: side to move (1.0 = white to move) — colour identity
     if (side_to_move == WHITE)
         std::fill(plane(12), plane(12) + 64, 1.0f);
 
-    // Plane 13: en passant target square
+    // Plane 13: en passant target square (canonical coords)
     if (ep_square != NO_SQ)
-        plane(13)[ep_square] = 1.0f;
+        plane(13)[canon(ep_square)] = 1.0f;
 
-    // Planes 14-17: castling rights (broadcast)
+    // Planes 14-15: OWN castling rights (K/Q); 16-17: opponent's
     auto fill_plane = [&](int pl) { std::fill(plane(pl), plane(pl)+64, 1.0f); };
-    if (castling & CASTLE_WK) fill_plane(14);
-    if (castling & CASTLE_WQ) fill_plane(15);
-    if (castling & CASTLE_BK) fill_plane(16);
-    if (castling & CASTLE_BQ) fill_plane(17);
+    const bool own_k = castling & (flip ? CASTLE_BK : CASTLE_WK);
+    const bool own_q = castling & (flip ? CASTLE_BQ : CASTLE_WQ);
+    const bool opp_k = castling & (flip ? CASTLE_WK : CASTLE_BK);
+    const bool opp_q = castling & (flip ? CASTLE_WQ : CASTLE_BQ);
+    if (own_k) fill_plane(14);
+    if (own_q) fill_plane(15);
+    if (opp_k) fill_plane(16);
+    if (opp_q) fill_plane(17);
 
     // Plane 18: halfmove clock (normalised 0-1)
     float hmc = std::min(halfmove_clock, 100) / 100.0f;
