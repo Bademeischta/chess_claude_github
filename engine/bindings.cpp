@@ -288,5 +288,11 @@ PYBIND11_MODULE(chess_ext, m) {
                  d.finish(pp, vp, n_threads);
              },
              py::arg("policy"), py::arg("values"), py::arg("n_threads") = 0,
-             "Expansion+backup for the pending slots of the last select().");
+             "Expansion+backup for the pending slots of the last select().")
+        .def("slot_fen", &RoundDriver::slot_fen, py::arg("slot"),
+             "FEN of a pending slot's leaf board (for tablebase probing).")
+        .def("resolve_pending", &RoundDriver::resolve_pending,
+             py::arg("slot"), py::arg("value"),
+             "Resolve a pending slot with an external value (e.g. Syzygy "
+             "WDL), excluding it from the next finish() batch.");
 }

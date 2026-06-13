@@ -154,3 +154,37 @@ def test_driver_finds_mate_in_one():
     total = sum(dist.values())
     assert mate_visits > total * 0.5, (
         f"mate move under-visited via driver: {mate_visits}/{total}")
+
+
+# ── 4. Driver runs WITH Syzygy active and resolves TB leaves correctly ────
+
+def test_driver_with_tablebases_matches_python_path():
+    """The driver must NOT be bypassed when Syzygy is loaded (the old gate
+    disabled it entirely). Endgame (<=5-piece) leaves are probed in Python
+    and resolved via resolve_pending; the resulting search must match the
+    legacy per-leaf path that probes inline."""
+    from engine.rules import init_tablebase, is_tablebase_available
+    from config import CONFIG as _CFG
+
+    sz = _CFG.syzygy_path or "syzygy"
+    init_tablebase(sz)
+    if not is_tablebase_available():
+        pytest.skip("no Syzygy tablebases available on this machine")
+
+    fens = [
+        "k7/8/K7/8/8/8/8/7R w - - 0 1",      # KR vs k — win
+        "8/8/8/4k3/8/4K3/8/6B1 w - - 0 1",   # KB vs k — insufficient draw
+        "8/5k2/8/8/8/3K4/4P3/8 w - - 0 1",   # KP vs k
+    ]
+    dists = []
+    for use_driver in (False, True):
+        pool = _make_pool(use_driver, n=len(fens))
+        for i, f in enumerate(fens):
+            pool.trees[i].reset(Board.from_fen(f), keep_history=False)
+        pool._batched_sims(list(range(len(fens))), 48)
+        dists.append([_visit_dist(t) for t in pool.trees])
+
+    for k, f in enumerate(fens):
+        assert dists[0][k] == dists[1][k], (
+            f"driver vs python visit mismatch WITH tablebases for {f}\n"
+            f"python: {dists[0][k]}\ndriver: {dists[1][k]}")

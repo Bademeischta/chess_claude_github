@@ -895,17 +895,26 @@ class Trainer:
         from engine.rules import get_game_result, GameResult
         from engine.board import Board, STARTPOS_FEN
 
+        # Opening diversity (CRITICAL): greedy + noise-free play from the
+        # SAME start position produces IDENTICAL games — the "100-game"
+        # arena then carries one game of signal and a bogus ±69 CI (observed
+        # live: W0/D100/L0). Deal one random opening per PAIR and play it
+        # from BOTH colours, so opening imbalance cancels and each pair is
+        # an honest 2-game mini-match.
+        opening_plies = int(getattr(self.cfg, "arena_opening_plies", 8))
+        n_pairs = max(1, n_games // 2)
+
         wins = draws = losses = 0
-        for game_idx in range(n_games):
-            # Alternate colors
-            current_is_white = (game_idx % 2 == 0)
+        for _pair in range(n_pairs):
+          opening_fen = self._random_opening_fen(opening_plies)
+          for current_is_white in (True, False):
             white_model = current_model if current_is_white else opponent_model
             black_model = opponent_model if current_is_white else current_model
 
             white_tree = MCTSTree(self.cfg, white_model, self.device)
             black_tree = MCTSTree(self.cfg, black_model, self.device)
 
-            board = Board.from_fen(STARTPOS_FEN)
+            board = Board.from_fen(opening_fen)
             # Seed both trees' GRU history once; advance() then maintains it for
             # both every move, and each search keeps (does not wipe) it.
             white_tree.reset(board)
@@ -947,3 +956,28 @@ class Trainer:
                 draws += 1
 
         return wins, draws, losses
+
+    def _random_opening_fen(self, plies: int) -> str:
+        """A random legal opening (FEN) reached by `plies` uniform-random
+        moves from the start. Re-deals if it lands on a terminal board;
+        falls back to the start position after a few tries."""
+        from engine.board import Board, STARTPOS_FEN
+        from engine.rules import get_game_result, GameResult
+        import random
+        if plies <= 0:
+            return STARTPOS_FEN
+        for _ in range(10):
+            b = Board.from_fen(STARTPOS_FEN)
+            ok = True
+            for _ in range(plies):
+                if get_game_result(b) != GameResult.ONGOING:
+                    ok = False
+                    break
+                legal = b.legal_moves()
+                if not legal:
+                    ok = False
+                    break
+                b = b.apply_move(random.choice(legal))
+            if ok and get_game_result(b) == GameResult.ONGOING:
+                return b.to_fen()
+        return STARTPOS_FEN

@@ -272,6 +272,10 @@ class ChessAIConfig:
     opponent_pool_size: int = 5
     arena_games: int = 200
     arena_every_n_steps: int = 10_000
+    # Random plies dealt at the start of each arena game (played from both
+    # colours per opening). 0 = always start position → identical greedy
+    # games (the W0/D100/L0 pathology). 8 gives diverse, balanced matches.
+    arena_opening_plies: int = 8
     # NOTE: a "play 30% of self-play games vs a pool checkpoint" knob
     # (self_play_vs_pool_ratio) existed here but was never wired into the
     # game scheduler; removed in the audit-fix pass (P4-5) rather than

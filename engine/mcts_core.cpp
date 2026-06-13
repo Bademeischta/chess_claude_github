@@ -518,6 +518,29 @@ int RoundDriver::select(const std::vector<MCTSTree *> &trees,
     return (int)pending_idx_.size();
 }
 
+std::string RoundDriver::slot_fen(int slot) const {
+    if (slot < 0 || slot >= (int)slots_.size()) return "";
+    return slots_[(size_t)slot].board.to_fen();
+}
+
+void RoundDriver::resolve_pending(int slot, float value) {
+    if (slot < 0 || slot >= (int)slots_.size()) return;
+    Slot &s = slots_[(size_t)slot];
+    if (!s.pending) return;
+    MCTSTree *t = trees_[(size_t)slot];
+    if (s.legal.empty()) {
+        t->mark_terminal(s.leaf, value);
+    } else {
+        std::vector<float> uniform(
+            s.legal.size(), 1.0f / (float)s.legal.size());
+        t->expand(s.leaf, s.legal, uniform);
+    }
+    t->backup(s.path, value, td_lambda_, s.fullmove, td_start_, td_end_);
+    s.pending = false;
+    auto it = std::find(pending_idx_.begin(), pending_idx_.end(), slot);
+    if (it != pending_idx_.end()) pending_idx_.erase(it);
+}
+
 void RoundDriver::finish(const float *policy, const float *values,
                          int n_threads) {
     const int p = (int)pending_idx_.size();

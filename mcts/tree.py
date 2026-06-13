@@ -986,20 +986,19 @@ class ParallelMCTS:
             budget = counts
 
         # ── C++ fast path: whole round (select → NN → expand/backup) in
-        # C++ with GIL released + thread pool. Bypassed when Syzygy is
-        # active (tablebase probing lives in Python) or after a driver
-        # error (fail open to the legacy loop below).
+        # C++ with GIL released + thread pool. Syzygy endgame leaves are
+        # probed in Python and resolved via driver.resolve_pending (the
+        # probe only fires at ≤5 pieces, so it costs nothing in the
+        # opening/midgame). Fails open to the legacy loop on any error.
         if self._round_driver is not None:
-            from engine.rules import is_tablebase_available
-            if not is_tablebase_available():
-                try:
-                    self._batched_sims_cpp(active, rounds, budget)
-                    return
-                except Exception as e:  # noqa: BLE001
-                    print(f"[ParallelMCTS] RoundDriver failed "
-                          f"({type(e).__name__}: {e}) — falling back to "
-                          f"Python round loop permanently.", flush=True)
-                    self._round_driver = None
+            try:
+                self._batched_sims_cpp(active, rounds, budget)
+                return
+            except Exception as e:  # noqa: BLE001
+                print(f"[ParallelMCTS] RoundDriver failed "
+                      f"({type(e).__name__}: {e}) — falling back to "
+                      f"Python round loop permanently.", flush=True)
+                self._round_driver = None
 
         for s in range(rounds):
             pendings: List[Tuple[int, dict]] = []
@@ -1025,6 +1024,8 @@ class ParallelMCTS:
         contempt = float(getattr(cfg, "mcts_contempt", 0.0))
         threads  = int(getattr(cfg, "cpp_round_threads", 0))
         dtype    = self.trees[0]._net_dtype()
+        from engine.rules import is_tablebase_available
+        tb_on    = is_tablebase_available()
 
         # Root node/board are CONSTANT across the rounds of one move —
         # build the per-tree argument lists once (per active-set shape).
@@ -1062,6 +1063,23 @@ class ParallelMCTS:
                 continue
 
             pend = np.flatnonzero(self._driver_pending[:m])
+
+            # ── Syzygy endgame leaves: probe in Python, resolve in C++ ──
+            # piece_count = sum over the 12 piece planes (canonical encoding
+            # planes 0-11). Probing only ≤5-piece leaves keeps this at zero
+            # cost through the opening/midgame; resolved leaves bypass the
+            # NN forward (mirrors _resolve_non_nn in the legacy path).
+            if tb_on and pend.size:
+                pc = self._driver_boards[pend, 0:12].sum(axis=(1, 2, 3))
+                for j in pend[pc <= 5]:
+                    tb_val = probe_tablebase(Board.from_fen(driver.slot_fen(int(j))))
+                    if tb_val is not None:
+                        driver.resolve_pending(int(j), 2.0 * tb_val - 1.0)
+                        self._driver_pending[j] = 0
+                pend = np.flatnonzero(self._driver_pending[:m])
+                if pend.size == 0:
+                    continue
+
             bt = self._driver_boards[pend]                       # (P,21,8,8)
             ht = np.stack([self.trees[idxs[j]].history_np()
                            for j in pend])

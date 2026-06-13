@@ -139,8 +139,19 @@ public:
                int n_threads);
 
     // policy: (P, num_actions) float32, values: (P,) float32 — rows in the
-    // order of pending slots from the preceding select() call.
+    // order of the STILL-pending slots after any resolve_pending() calls.
     void finish(const float *policy, const float *values, int n_threads);
+
+    // FEN of a pending slot's leaf board — for Python-side tablebase probing
+    // (Syzygy probing lives in python-chess). Empty string if out of range.
+    std::string slot_fen(int slot) const;
+
+    // Resolve a pending slot with an externally-supplied value (e.g. a
+    // tablebase WDL in side-to-move perspective): expand with uniform priors
+    // (or mark terminal) + backup, clear its pending flag, and drop it from
+    // the finish() batch. Lets Syzygy endgame leaves bypass the NN without
+    // disabling the whole driver (the previous design did the latter).
+    void resolve_pending(int slot, float value);
 
 private:
     struct Slot {
