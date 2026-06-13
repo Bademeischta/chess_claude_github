@@ -1043,6 +1043,19 @@ class ParallelMCTS:
             fullm[:]     = [int(self.trees[i]._root_board.fullmove_number)
                             for i in idxs]
 
+        # ── History cache (the big win) ──────────────────────────────────
+        # The GRU history is ROOT-relative, so it is identical for every leaf
+        # of a tree across all `rounds` sims of this move. The old code
+        # rebuilt it (np.stack of fill_history) AND re-transferred it H2D
+        # every round — measured at ~64 % of self-play transfer volume and
+        # the single largest cost (.to() = 53 % of wall time), because the
+        # history tensor is 8× the board tensor (T=8 stacked planes).
+        # Build it ONCE on the GPU here and gather the needed rows per round.
+        device = self.device
+        active_row = {ti: a for a, ti in enumerate(active)}
+        hist_active = np.stack([self.trees[ti].history_np() for ti in active])
+        hist_active_gpu = torch.from_numpy(hist_active).to(device, dtype)
+
         for s in range(rounds):
             idxs = [i for i in active
                     if budget is None or s < budget[i]]
@@ -1081,11 +1094,12 @@ class ParallelMCTS:
                     continue
 
             bt = self._driver_boards[pend]                       # (P,21,8,8)
-            ht = np.stack([self.trees[idxs[j]].history_np()
-                           for j in pend])
-
-            board_t = torch.from_numpy(bt).to(self.device, dtype)
-            hist_t  = torch.from_numpy(ht).to(self.device, dtype)
+            board_t = torch.from_numpy(bt).to(device, dtype)
+            # History: gather the precomputed GPU rows for the pending trees
+            # (no per-round rebuild, no per-round history H2D).
+            rows = torch.as_tensor([active_row[idxs[j]] for j in pend],
+                                   device=device, dtype=torch.long)
+            hist_t = hist_active_gpu.index_select(0, rows)
             policy_logits, values = self.engine.infer(board_t, hist_t)
 
             logits_np = np.ascontiguousarray(
