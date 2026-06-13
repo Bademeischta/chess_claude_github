@@ -141,7 +141,17 @@ class ChessAIConfig:
     # at a fraction of the cost. Raise these again later for end-game polish.
     mcts_sims: int = 128           # Standard simulation budget (was 200)
     mcts_sims_critical: int = 256  # Budget when |Q1-Q2| < dca_threshold
-    mcts_sims_teacher: int = 256   # Budget for teacher rollout games (was 800)
+    mcts_sims_teacher: int = 128   # Budget for teacher rollout games. Was 256,
+                                   # but teacher games run in a tiny width-16
+                                   # pool (parallel_games//6) — at 256 sims they
+                                   # ate a disproportionate share of self-play
+                                   # wall-time for marginal target quality on a
+                                   # sub-1000-Elo net (measured 2026-06-13:
+                                   # production stuck ~26 pos/s). 128 halves the
+                                   # teacher cost; raise back toward 400-800 for
+                                   # endgame polish once the net is strong and
+                                   # the teacher buffer actually needs sharper
+                                   # targets.
     mcts_c_puct: float = 2.0       # UCB exploration constant
 
     # Contempt: penalty (in the [-1,+1] value space) applied to *terminal*
@@ -226,7 +236,14 @@ class ChessAIConfig:
     opening_book_path: str = ""
 
     # ── Teacher / Self-distillation ──────────────────────────────────────
-    teacher_game_ratio: float = 0.10   # Fraction of games run at 800 sims
+    teacher_game_ratio: float = 0.05   # Fraction of games run at teacher sims.
+                                       # 0.10→0.05: the teacher buffer fills to
+                                       # its 200k cap quickly and then teacher
+                                       # games only refresh a full buffer; at
+                                       # the old ratio they were ~10% of games
+                                       # but a larger share of wall-time (tiny
+                                       # width-16 pool). Halved during bootstrap
+                                       # — restore later for endgame polish.
     teacher_batch_ratio: float = 0.30  # Fraction of training batch from teacher buf
     teacher_loss_weight: float = 1.0   # Scale of the teacher KL term in total loss
 
