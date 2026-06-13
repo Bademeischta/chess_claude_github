@@ -188,3 +188,39 @@ def test_driver_with_tablebases_matches_python_path():
         assert dists[0][k] == dists[1][k], (
             f"driver vs python visit mismatch WITH tablebases for {f}\n"
             f"python: {dists[0][k]}\ndriver: {dists[1][k]}")
+
+
+# ── 5. root_analysis per-move Q is side-to-move POV (web-UI sign bug) ──────
+
+def test_root_analysis_q_is_side_to_move_pov():
+    """The best move (most visits) must report the HIGHEST per-move Q, in the
+    player-to-move's frame (positive = good for the player). Before the fix
+    root_analysis returned the raw child.Q (opponent POV), so the played
+    move showed the LOWEST eval — the engine looked like it played its worst
+    move in the web UI even though selection was correct."""
+    # Mate-in-1 (scholar's mate): the mating move is best for White.
+    fen = "r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+    pool = _make_pool(True, n=1)
+    b = Board.from_fen(fen)
+    pool.trees[0].reset(b, keep_history=False)
+    pool._batched_sims([0], 300)
+
+    a = pool.trees[0].root_analysis(top_k=8)
+    top = a["top"]
+    assert top, "root_analysis returned no moves"
+
+    # The mating move dominates visits → it is top[0].
+    mate_moves = []
+    for m in b.legal_moves():
+        nb = b.apply_move(m)
+        if not nb.legal_moves() and nb.in_check():
+            mate_moves.append(m)
+    assert top[0][0] in mate_moves, "most-visited move should be the mate"
+
+    # Its reported Q must be the MAXIMUM across candidates and POSITIVE
+    # (winning for the side to move) — not the minimum as before the fix.
+    best_q = top[0][2]
+    assert best_q == max(q for _, _, q in top), \
+        "best (most-visited) move must report the highest per-move Q"
+    assert best_q > 0.0, \
+        f"a winning move must report a positive side-to-move Q, got {best_q}"

@@ -685,7 +685,9 @@ class MCTSTree:
 
           {"value": root Q in [-1,1] (side-to-move POV),
            "nodes": tree size, "depth": pv length,
-           "top": [(move_int, visits, q), …]  most-visited first,
+           "top": [(move_int, visits, q), …]  most-visited first;
+                  q is SIDE-TO-MOVE POV (higher = better for the player to
+                  move), consistent with `value` and the eval bar,
            "pv":  [move_int, …]               principal variation}
 
         Used for the UCI `info` line and the --play/--show readout.
@@ -693,7 +695,16 @@ class MCTSTree:
         root = self._root_node
         kids = sorted(self._children(root),
                       key=lambda mc: getattr(mc[1], "N", 0), reverse=True)
-        top = [(m, int(getattr(c, "N", 0)), float(getattr(c, "Q", 0.0)))
+        # PERSPECTIVE: child.Q is stored from the CHILD's POV — i.e. the
+        # opponent, who is to move AFTER this move. A move that is GOOD for
+        # the player therefore has a NEGATIVE child.Q. Report -child.Q so the
+        # per-move eval is in the player-to-move's frame (matching `value`).
+        # Without this negation the best move (most visits, lowest child.Q)
+        # displayed the LOWEST eval, so the engine looked like it played its
+        # worst move while "preferring" a +Q blunder (user-reported via the
+        # web UI). Move SELECTION was always correct (it is visit-based, and
+        # PUCT already negates internally) — only this readout was inverted.
+        top = [(m, int(getattr(c, "N", 0)), -float(getattr(c, "Q", 0.0)))
                for m, c in kids[:top_k]]
 
         pv, node = [], root

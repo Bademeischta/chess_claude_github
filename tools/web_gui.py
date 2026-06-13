@@ -334,7 +334,9 @@ class GameSession:
         if rank == 1:
             verdict = "Best move. I agree."
         elif rank is not None and user_q is not None:
-            delta = best_q - user_q   # both from side-to-move's POV; ≥0
+            # Both q's are side-to-move POV (root_analysis negates child.Q),
+            # and top[0] is the most-visited = highest-q move, so delta ≥ 0.
+            delta = best_q - user_q
             if delta < 0.05:
                 verdict = f"#{rank} on my list — almost identical (-{delta:.2f})."
             elif delta < 0.15:
