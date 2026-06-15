@@ -598,6 +598,25 @@ class GameSession:
             move = legal[0] if legal else 0
         return int(move)
 
+    def _position_view(self) -> dict:
+        """Static (search-independent) facts about the current root position:
+        WDL breakdown + material-aux from the net, material balance, phase,
+        and tactical hints. Computed ONCE per position (cached by FEN) — the
+        net forward for WDL is cheap but pointless to repeat every 150 ms tick
+        while the root is unchanged."""
+        if self.board is None or self.tree is None:
+            return {}
+        fen = _safe(lambda: self.board.to_fen(), "")
+        cached = getattr(self, "_pos_view_cache", None)
+        if cached is not None and cached.get("fen") == fen:
+            return cached
+        view = {"fen": fen}
+        view.update(_material_phase(self.board))
+        view["tactics"] = _tactical_hints(self.board)
+        view["wdl"] = _safe(lambda: self.tree.root_wdl(), {}) or {}
+        self._pos_view_cache = view
+        return view
+
     def _emit_progress(self, sims_done: int, sims_target: Optional[int],
                        time_elapsed_s: Optional[float] = None,
                        time_budget_s: Optional[float] = None) -> None:
@@ -611,6 +630,7 @@ class GameSession:
             "time_elapsed":  time_elapsed_s,
             "time_budget":   time_budget_s,
             "analysis":      _analysis_for_wire(a),
+            "position":      self._position_view(),
         })
 
     def _budget_label(self) -> str:
@@ -676,6 +696,7 @@ class GameSession:
                 self.emit("ponder_update", {
                     "sims": sims_count,
                     "analysis": _analysis_for_wire(a),
+                    "position": self._position_view(),
                 })
                 last_emit = now
 
@@ -778,6 +799,72 @@ class GameSession:
         }.get(res, "")
 
 
+_PIECE_LETTERS = ["P", "N", "B", "R", "Q", "K"]
+_PIECE_VALUES  = [1, 3, 3, 5, 9, 0]
+
+
+def _material_phase(board) -> dict:
+    """Material balance (White − Black, in pawns) + game phase label."""
+    diff = 0
+    try:
+        for sq in range(64):
+            p = board.piece_at(sq)
+            if p is None or p < 0:
+                continue
+            v = _PIECE_VALUES[p % 6]
+            diff += v if (p // 6) == 0 else -v
+    except Exception:
+        pass
+    phase = {0: "opening", 1: "middlegame", 2: "endgame"}.get(
+        _safe(lambda: board.get_phase()), "?")
+    return {"material": int(diff), "phase": phase}
+
+
+def _tactical_hints(board) -> dict:
+    """Cheap board-level hints (NOT from the net): is the side to move in
+    check, which captures are available (with victim value), and which of the
+    side-to-move's own pieces are hanging (attacked by the opponent and not
+    defended). A heuristic readout to help SEE what the engine might be
+    weighing — not a tactics solver (ignores pins / x-rays / overloads)."""
+    stm = int(getattr(board, "side_to_move", 0))
+    opp = 1 - stm
+    out = {"in_check": bool(_safe(lambda: board.in_check())),
+           "captures": [], "hanging": []}
+    try:
+        for m in board.legal_moves():
+            to = (m >> 6) & 0x3F
+            tgt = board.piece_at(to)
+            if tgt is not None and tgt >= 0 and (tgt // 6) == opp:
+                out["captures"].append(
+                    {"uci": _move_uci(m), "victim": _PIECE_LETTERS[tgt % 6],
+                     "value": _PIECE_VALUES[tgt % 6]})
+    except Exception:
+        pass
+    # Highest-value captures first, keep it short.
+    out["captures"].sort(key=lambda c: -c["value"])
+    out["captures"] = out["captures"][:6]
+    try:
+        for sq in range(64):
+            p = board.piece_at(sq)
+            if p is None or p < 0 or (p // 6) != stm:
+                continue
+            if board.is_attacked(sq, opp) and not board.is_attacked(sq, stm):
+                out["hanging"].append(
+                    {"sq": int(sq), "piece": _PIECE_LETTERS[p % 6],
+                     "value": _PIECE_VALUES[p % 6]})
+    except Exception:
+        pass
+    out["hanging"].sort(key=lambda h: -h["value"])
+    return out
+
+
+def _safe(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
 def _analysis_for_wire(a: dict) -> dict:
     """Serialise root_analysis() for JSON. Converts move ints → UCI strings."""
     if not a:
@@ -789,6 +876,11 @@ def _analysis_for_wire(a: dict) -> dict:
         "top":    [{"uci": _move_uci(m), "n": int(n), "q": float(q)}
                    for (m, n, q) in a.get("top", [])],
         "pv":     [_move_uci(m) for m in a.get("pv", [])],
+        # Per-move decision detail (prior P, exploration U, mini-PV line).
+        "ext":    [{"uci": _move_uci(e["move"]), "n": int(e["n"]),
+                    "q": float(e["q"]), "p": float(e["p"]), "u": float(e["u"]),
+                    "line": [_move_uci(x) for x in e.get("line", [])]}
+                   for e in a.get("ext", [])],
     }
 
 
@@ -1129,6 +1221,50 @@ PAGE = r"""<!doctype html>
     .wrap{grid-template-columns:1fr}
     #board{width:min(90vw,560px)}
   }
+
+  /* ── Observability additions ─────────────────────────────────────── */
+  /* WDL bar (win/draw/loss) */
+  .wdlbar{display:flex;height:14px;border-radius:6px;overflow:hidden;
+          border:1px solid var(--border);background:#0b0e12;width:100%}
+  .wdlbar > div{height:100%;transition:width .25s ease}
+  .wdl-w{background:#3ddc97}.wdl-d{background:#5a6675}.wdl-l{background:#ff6f6f}
+  .wdllbl{display:flex;justify-content:space-between;font-size:10px;
+          color:var(--ink-fade);margin-top:2px}
+  .wdllbl b{color:var(--ink-dim);font-weight:600}
+  /* Top-moves: prior column + expandable mini-PV */
+  table.moves td.prior{color:var(--ink-fade);font-size:11px}
+  .moverow{cursor:pointer}
+  .moverow:hover{background:rgba(255,255,255,.03)}
+  .miniline{color:var(--ink-dim);font-size:11px;padding:2px 6px 6px 28px;
+            background:rgba(255,255,255,.02)}
+  .miniline .puct{color:var(--ink-fade);margin-right:10px}
+  .miniline .sanline span{padding:1px 5px;margin-right:3px;border-radius:4px;
+            background:var(--bg-3);border:1px solid var(--border)}
+  /* Position insight card */
+  .pi-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+          margin-bottom:8px;font-size:12px}
+  .pi-chip{padding:3px 9px;border-radius:999px;border:1px solid var(--border);
+           background:var(--bg-2);color:var(--ink-dim)}
+  .pi-chip b{color:var(--ink)}
+  .pi-sec{font-size:11px;color:var(--ink-fade);margin:8px 0 3px;
+          text-transform:uppercase;letter-spacing:.04em}
+  .tac{display:flex;flex-wrap:wrap;gap:5px}
+  .tac span{font-size:11px;padding:2px 7px;border-radius:4px;
+            border:1px solid var(--border);background:var(--bg-2)}
+  .tac .cap{color:var(--good);border-color:rgba(61,220,151,.3)}
+  .tac .hang{color:var(--bad);border-color:rgba(255,111,111,.3)}
+  .tac .chk{color:var(--warn);border-color:rgba(255,180,84,.4)}
+  /* Convergence line in the thinking card */
+  .converge{font-size:11px;color:var(--ink-fade);margin-top:6px}
+  .converge b{color:var(--ink-dim)}
+  /* Eval-over-game chart */
+  #evalchart{width:100%;height:90px;display:block}
+  #evalchart .axis{stroke:var(--border);stroke-width:.5}
+  #evalchart .zero{stroke:var(--ink-fade);stroke-width:.5;stroke-dasharray:3 3}
+  #evalchart .line{fill:none;stroke:var(--accent);stroke-width:1.5}
+  /* Board heatmap squares (destination focus of the search) */
+  .heat{position:absolute;border-radius:3px;pointer-events:none;
+        mix-blend-mode:screen}
 </style>
 </head><body>
 
@@ -1154,6 +1290,18 @@ PAGE = r"""<!doctype html>
       <div class="evalrow" style="width:min(72vh,560px);max-width:100%">
         <div class="evalbar"><div id="evalfill" class="evalfill"></div></div>
         <div class="evalnum" id="evalnum">+0.00</div>
+      </div>
+      <div style="width:min(72vh,560px);max-width:100%">
+        <div class="wdlbar" id="wdlbar" title="Win / Draw / Loss probability from the net's value head (side-to-move POV)">
+          <div class="wdl-w" id="wdl-w" style="width:33%"></div>
+          <div class="wdl-d" id="wdl-d" style="width:34%"></div>
+          <div class="wdl-l" id="wdl-l" style="width:33%"></div>
+        </div>
+        <div class="wdllbl">
+          <span>Win <b id="wdl-wt">—</b></span>
+          <span>Draw <b id="wdl-dt">—</b></span>
+          <span>Loss <b id="wdl-lt">—</b></span>
+        </div>
       </div>
       <div class="evalrow" style="width:min(72vh,560px);max-width:100%;gap:6px">
         <span class="matchip" id="matchip">Material: even</span>
@@ -1193,19 +1341,36 @@ PAGE = r"""<!doctype html>
         <span id="progresstxt">idle</span>
         <span id="nodes"></span>
       </div>
+      <div class="converge" id="converge"></div>
     </div>
 
     <div class="card">
-      <h3>Top candidate moves</h3>
+      <h3>Top candidate moves <span style="float:right;color:var(--ink-fade);font-size:10px">click a row for its line</span></h3>
       <table class="moves"><thead><tr>
         <th>#</th><th>Move</th><th class="num">Visits</th>
-        <th class="num">Q</th><th>Share</th>
-      </tr></thead><tbody id="topmoves"><tr><td colspan="5" style="color:var(--ink-dim);text-align:center;padding:18px">no analysis yet</td></tr></tbody></table>
+        <th class="num">Prior</th><th class="num">Q</th><th>Share</th>
+      </tr></thead><tbody id="topmoves"><tr><td colspan="6" style="color:var(--ink-dim);text-align:center;padding:18px">no analysis yet</td></tr></tbody></table>
+    </div>
+
+    <div class="card">
+      <h3>Position insight</h3>
+      <div class="pi-row" id="pi-meta">
+        <span class="pi-chip">Material <b id="pi-mat">—</b></span>
+        <span class="pi-chip">Phase <b id="pi-phase">—</b></span>
+        <span class="pi-chip" title="The value head's learnable material-balance signal (side-to-move POV)">Material-sense <b id="pi-aux">—</b></span>
+      </div>
+      <div class="pi-sec">Tactics on the board (heuristic, not from the net)</div>
+      <div class="tac" id="pi-tac"><span style="color:var(--ink-fade);border:none;background:none">—</span></div>
     </div>
 
     <div class="card">
       <h3>Principal variation</h3>
       <div class="pv" id="pv"><span style="color:var(--ink-dim);background:transparent;border:none">—</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Eval over game <span style="float:right;color:var(--ink-fade);font-size:10px">side-to-move POV per move</span></h3>
+      <svg id="evalchart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
     </div>
 
     <div class="card">
@@ -1386,6 +1551,23 @@ function drawArrows(top){
   if (!top || !top.length) return;
   // Total visits for opacity normalisation
   let totalN = top.reduce((s, m) => s + (m.n||0), 0) || 1;
+  // Heatmap: shade each candidate's destination square by visit share, so
+  // you can SEE where the search concentrated (drawn first, arrows on top).
+  const SQ = 12.5;
+  for (let m of top){
+    if (!m.uci || m.uci.length < 4) continue;
+    let to = squareCenter(m.uci.slice(2, 4));
+    if (!to) continue;
+    let share = (m.n || 0) / totalN;
+    let rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', (to.x - SQ/2).toFixed(2));
+    rect.setAttribute('y', (to.y - SQ/2).toFixed(2));
+    rect.setAttribute('width', SQ); rect.setAttribute('height', SQ);
+    rect.setAttribute('rx', '1.5');
+    rect.setAttribute('fill', '#3ddc97');
+    rect.setAttribute('opacity', Math.max(0.05, Math.min(0.5, share*0.6)).toFixed(3));
+    svg.appendChild(rect);
+  }
   // Draw at most 3 arrows, in order. Strongest = green-ish, fading.
   const colors = ['#3ddc97', '#5aa9ff', '#ffb454'];
   for (let i = 0; i < Math.min(3, top.length); i++){
@@ -1551,6 +1733,7 @@ function onUserMove(d){
 }
 function onAIStart(d){
   busy = true;
+  resetConverge();
   document.getElementById('thinkmode').textContent = d.budget || d.mode || '';
   document.getElementById('progresstxt').textContent = 'starting…';
   document.getElementById('progressfill').style.width = '2%';
@@ -1574,6 +1757,7 @@ function onAIProgress(d){
   if (d.analysis){
     renderAnalysis(d.analysis);
   }
+  if (d.position) renderPosition(d.position);
 }
 function onAIMove(d){
   game.load(d.fen);
@@ -1614,6 +1798,7 @@ function onPonderUpdate(d){
   document.getElementById('ponderlbl').textContent =
     'pondering — ' + d.sims + ' sims so far';
   if (d.analysis) renderAnalysis(d.analysis);
+  if (d.position) renderPosition(d.position);
 }
 function onTakeback(d){
   game.load(d.fen);
@@ -1649,6 +1834,43 @@ function onGameOver(d){
 }
 
 // ─── Render ───────────────────────────────────────────────────────────
+// Convergence tracking: how the engine's preferred move evolves during a
+// search (does it keep changing its mind = uncertain, or lock in early?).
+let convergeState = {best:null, changes:0};
+function resetConverge(){
+  convergeState = {best:null, changes:0};
+  let el = document.getElementById('converge');
+  if (el) el.textContent = '';
+}
+function trackConverge(top){
+  if (!top || !top.length) return;
+  let best = top[0].uci;
+  if (convergeState.best && best !== convergeState.best) convergeState.changes++;
+  convergeState.best = best;
+  let el = document.getElementById('converge');
+  if (!el) return;
+  let san = fmtMoveSan(best);
+  let tag = convergeState.changes === 0
+    ? '<b>locked in</b> from the start'
+    : 'changed its mind <b>' + convergeState.changes + '×</b>';
+  el.innerHTML = 'Current pick: <b>' + san + '</b> · ' + tag;
+}
+// Replay a UCI line into SAN on a clone of the current position.
+function sanLine(uciList){
+  let g = new Chess(game.fen());
+  let sans = [];
+  for (let u of (uciList||[])){
+    let mv = g.move({from:u.slice(0,2), to:u.slice(2,4),
+                     promotion: u.length>4 ? u[4] : 'q'});
+    if (!mv) break;
+    sans.push(mv.san);
+  }
+  return sans;
+}
+function toggleMoveDetail(i){
+  let row = document.getElementById('mdetail-'+i);
+  if (row) row.style.display = (row.style.display === 'none' ? '' : 'none');
+}
 function renderAnalysis(a){
   if (!a) return;
   if (typeof a.value === 'number') setEval(a.value);
@@ -1658,37 +1880,120 @@ function renderAnalysis(a){
   }
   updateConfidence(a);
   drawArrows(a.top || []);
+  // Prefer the richer `ext` (prior P, exploration U, mini-PV) when present;
+  // fall back to plain `top` for older payloads.
+  let rows = (a.ext && a.ext.length) ? a.ext : (a.top || []);
+  trackConverge(rows);
   // Top moves
   let tbody = document.getElementById('topmoves');
-  if (a.top && a.top.length){
-    let total = a.top.reduce((s,m) => s + (m.n||0), 0) || 1;
-    tbody.innerHTML = a.top.map((m, i) => {
+  if (rows.length){
+    let total = rows.reduce((s,m) => s + (m.n||0), 0) || 1;
+    tbody.innerHTML = rows.map((m, i) => {
       let pct = (m.n||0) / total * 100;
       let cls = i === 0 ? 'top1' : '';
-      return '<tr class="'+cls+'"><td>'+(i+1)+'</td><td>'+fmtMoveSan(m.uci)+
-             '</td><td class="num">'+m.n+'</td>'+
+      let priorTxt = (typeof m.p === 'number') ? (m.p*100).toFixed(1)+'%' : '—';
+      let main = '<tr class="moverow '+cls+'" onclick="toggleMoveDetail('+i+')">'+
+             '<td>'+(i+1)+'</td><td>'+fmtMoveSan(m.uci)+'</td>'+
+             '<td class="num">'+m.n+'</td>'+
+             '<td class="num prior">'+priorTxt+'</td>'+
              '<td class="num">'+(m.q>=0?'+':'')+m.q.toFixed(2)+'</td>'+
              '<td><div class="bar"><span style="width:'+pct.toFixed(0)+'%"></span></div></td></tr>';
+      // Detail row: PUCT decomposition + the move's own expected line.
+      let detail = '';
+      if (typeof m.p === 'number' || (m.line && m.line.length)){
+        let puct = '<span class="puct">Q '+(m.q>=0?'+':'')+m.q.toFixed(3)+'</span>'+
+                   '<span class="puct">prior '+priorTxt+'</span>'+
+                   (typeof m.u==='number' ? '<span class="puct">explore +'+m.u.toFixed(3)+'</span>' : '');
+        let sans = sanLine(m.line);
+        let lineHtml = sans.length
+          ? '<span class="sanline">'+sans.map(s=>'<span>'+s+'</span>').join('')+'</span>'
+          : '<span style="color:var(--ink-fade)">no deeper line searched</span>';
+        detail = '<tr id="mdetail-'+i+'" style="display:none"><td colspan="6" class="miniline">'+
+                 puct+'<br>'+lineHtml+'</td></tr>';
+      }
+      return main + detail;
     }).join('');
   }
   // PV
   let pv = document.getElementById('pv');
   if (a.pv && a.pv.length){
-    // Render PV as SAN by replaying on a clone.
-    let g = new Chess(game.fen());
-    let sans = [];
-    for (let u of a.pv){
-      let mv = g.move({from:u.slice(0,2), to:u.slice(2,4),
-                       promotion: u.length>4 ? u[4] : 'q'});
-      if (!mv) break;
-      sans.push(mv.san);
-    }
+    let sans = sanLine(a.pv);
     pv.innerHTML = sans.length ? sans.map(s => '<span>'+s+'</span>').join('') :
                                  '<span style="color:var(--ink-dim);background:transparent;border:none">—</span>';
   }
 }
+function renderPosition(pos){
+  if (!pos) return;
+  // WDL bar
+  let w = pos.wdl || {};
+  if (typeof w.win === 'number'){
+    let pw = Math.max(0, w.win)*100, pd = Math.max(0, w.draw)*100, pl = Math.max(0, w.loss)*100;
+    document.getElementById('wdl-w').style.width = pw.toFixed(1)+'%';
+    document.getElementById('wdl-d').style.width = pd.toFixed(1)+'%';
+    document.getElementById('wdl-l').style.width = pl.toFixed(1)+'%';
+    document.getElementById('wdl-wt').textContent = pw.toFixed(0)+'%';
+    document.getElementById('wdl-dt').textContent = pd.toFixed(0)+'%';
+    document.getElementById('wdl-lt').textContent = pl.toFixed(0)+'%';
+  }
+  // Material / phase / aux
+  if (typeof pos.material === 'number'){
+    let m = pos.material;
+    document.getElementById('pi-mat').textContent =
+      (m>0?'White +'+m : m<0?'Black +'+(-m) : 'even');
+  }
+  if (pos.phase) document.getElementById('pi-phase').textContent = pos.phase;
+  if (w && typeof w.aux === 'number')
+    document.getElementById('pi-aux').textContent = (w.aux>=0?'+':'')+w.aux.toFixed(2);
+  // Tactics
+  let t = pos.tactics || {};
+  let chips = [];
+  if (t.in_check) chips.push('<span class="chk">in check</span>');
+  (t.captures||[]).forEach(c =>
+    chips.push('<span class="cap">×'+c.victim+' '+fmtMoveSan(c.uci)+'</span>'));
+  (t.hanging||[]).forEach(h =>
+    chips.push('<span class="hang">hanging '+h.piece+'</span>'));
+  let tac = document.getElementById('pi-tac');
+  tac.innerHTML = chips.length ? chips.join('') :
+    '<span style="color:var(--ink-fade);border:none;background:none">nothing obvious</span>';
+}
+// Eval-over-game line chart from the move history (side-to-move POV evals).
+function renderEvalChart(h){
+  let svg = document.getElementById('evalchart');
+  if (!svg) return;
+  let pts = (h||[]).filter(x => typeof x.eval === 'number');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const W=300, H=90, mid=H/2;
+  const mkline = (cls, d) => {
+    let p = document.createElementNS('http://www.w3.org/2000/svg','line');
+    p.setAttribute('class',cls);
+    p.setAttribute('x1',d[0]);p.setAttribute('y1',d[1]);
+    p.setAttribute('x2',d[2]);p.setAttribute('y2',d[3]);
+    svg.appendChild(p);
+  };
+  mkline('zero',[0,mid,W,mid]);
+  if (pts.length < 2){
+    let t=document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.setAttribute('x',W/2);t.setAttribute('y',mid-6);
+    t.setAttribute('text-anchor','middle');
+    t.setAttribute('fill','#7a8590');t.setAttribute('font-size','11');
+    t.textContent='not enough moves yet';svg.appendChild(t);
+    return;
+  }
+  // eval in [-1,1] → y; clamp. Top = +1 (good for side to move at that ply).
+  let path='';
+  pts.forEach((x,i) => {
+    let xx = i/(pts.length-1)*W;
+    let e = Math.max(-1, Math.min(1, x.eval));
+    let yy = mid - e*(mid-4);
+    path += (i===0?'M':'L')+xx.toFixed(1)+' '+yy.toFixed(1)+' ';
+  });
+  let pl=document.createElementNS('http://www.w3.org/2000/svg','path');
+  pl.setAttribute('class','line');pl.setAttribute('d',path);
+  svg.appendChild(pl);
+}
 function renderHistory(h){
   let el = document.getElementById('history');
+  renderEvalChart(h);
   if (!h || !h.length) {
     el.innerHTML = '<div style="color:var(--ink-dim);text-align:center;padding:20px">no moves yet</div>';
     return;

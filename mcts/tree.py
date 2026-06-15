@@ -539,6 +539,43 @@ class MCTSTree:
         value     = float(value_scalar[0].cpu())
         return value, policy_np
 
+    @torch.no_grad()
+    def root_wdl(self) -> dict:
+        """Win/Draw/Loss probabilities + material-aux scalar for the CURRENT
+        root, from the side-to-move's POV. Uses the raw model (the CUDA-graph
+        engine only returns the scalar value) — one small forward, called at
+        most once per position by the web UI for the WDL breakdown panel.
+
+        Returns {"win","draw","loss","aux"} or {} if the model can't provide
+        WDL (e.g. a stub/older net without a 3-logit value head).
+        """
+        try:
+            import torch.nn.functional as F
+            board = self._root_board
+            board_t = torch.from_numpy(board.to_tensor()).unsqueeze(0)
+            board_t = board_t.to(device=self.device, dtype=self._net_dtype())
+            # ROOT eval: history must EXCLUDE the current root (audit P3-4).
+            hist_t = self._make_history_tensor(exclude_last=True)
+            model = getattr(self.model, "_orig_mod", self.model)
+            model.eval()
+            out = model(board_t, hist_t)
+            if not isinstance(out, (tuple, list)) or len(out) < 2:
+                return {}
+            wdl_logits = out[1].float()
+            if wdl_logits.ndim != 2 or wdl_logits.shape[-1] != 3:
+                return {}  # net has no 3-class WDL head
+            probs = F.softmax(wdl_logits, dim=-1)[0].cpu().tolist()
+            aux = 0.0
+            if len(out) >= 3 and out[2] is not None:
+                try:
+                    aux = float(out[2].float().reshape(-1)[0].cpu())
+                except Exception:
+                    aux = 0.0
+            return {"win": float(probs[0]), "draw": float(probs[1]),
+                    "loss": float(probs[2]), "aux": aux}
+        except Exception:
+            return {}
+
     def _net_dtype(self) -> torch.dtype:
         if self.cfg.precision == "bf16":   return torch.bfloat16
         elif self.cfg.precision == "fp16": return torch.float16
@@ -688,7 +725,11 @@ class MCTSTree:
            "top": [(move_int, visits, q), …]  most-visited first;
                   q is SIDE-TO-MOVE POV (higher = better for the player to
                   move), consistent with `value` and the eval bar,
-           "pv":  [move_int, …]               principal variation}
+           "pv":  [move_int, …]               principal variation,
+           "ext": [{"move","n","q","p","u","line"}, …]  per-move detail,
+                  aligned with `top`: p = policy prior, u = PUCT exploration
+                  term, line = the move's own expected continuation (mini-PV,
+                  move ints). For the web UI's decision-tracing panels.}
 
         Used for the UCI `info` line and the --play/--show readout.
         """
@@ -707,6 +748,38 @@ class MCTSTree:
         top = [(m, int(getattr(c, "N", 0)), -float(getattr(c, "Q", 0.0)))
                for m, c in kids[:top_k]]
 
+        # ── Per-move detail for decision tracing (web UI) ────────────────
+        # p = policy prior P (the net's instinct BEFORE search);
+        # u = PUCT exploration bonus c_puct·P·√N_parent/(1+N_child)
+        #     (why a low-visit move is still being explored);
+        # line = the move's own best continuation (most-visited descendants),
+        #     i.e. what the engine expects AFTER playing it.
+        parent_n = max(1, int(getattr(root, "N", 0)))
+        sqrt_pn = math.sqrt(parent_n)
+        ext = []
+        for m, c in kids[:top_k]:
+            n_c = int(getattr(c, "N", 0))
+            p_c = float(getattr(c, "P", 0.0))
+            u_c = self.c_puct * p_c * sqrt_pn / (1.0 + n_c)
+            line = [m]
+            node = c
+            for _ in range(max(0, pv_len - 1)):
+                ch = sorted(self._children(node),
+                            key=lambda mc: getattr(mc[1], "N", 0),
+                            reverse=True)
+                if not ch or getattr(ch[0][1], "N", 0) <= 0:
+                    break
+                line.append(ch[0][0])
+                node = ch[0][1]
+            ext.append({
+                "move": m,
+                "n":    n_c,
+                "q":    -float(getattr(c, "Q", 0.0)),
+                "p":    p_c,
+                "u":    u_c,
+                "line": line,
+            })
+
         pv, node = [], root
         for _ in range(pv_len):
             ch = sorted(self._children(node),
@@ -723,7 +796,7 @@ class MCTSTree:
             nodes = 0
 
         return {"value": self.root_value(), "nodes": nodes,
-                "depth": len(pv), "top": top, "pv": pv}
+                "depth": len(pv), "top": top, "pv": pv, "ext": ext}
 
     # ── Full search (run N simulations with DCA) ──────────────────────────
 
