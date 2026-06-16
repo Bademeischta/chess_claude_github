@@ -625,6 +625,12 @@ class Trainer:
         torch.save(state, tmp_path)
         os.replace(tmp_path, path)
 
+        # Rolling retention: prune old step_NNNNNNN.pt so they don't pile up
+        # (each ~278 MB; left unbounded they hit 42 GB by step ~30k). Only
+        # the auto-named periodic checkpoints are managed — never latest.pt,
+        # the pool's net_step*.pt, or the buffer snapshots.
+        self._prune_old_checkpoints(ckpt_dir)
+
         # ONNX re-export hook (no-op unless inference_backend == "onnx").
         # Self-play's OnnxInferenceEngine picks the new file up by mtime
         # between games. Never let an export failure break checkpointing.
@@ -637,6 +643,31 @@ class Trainer:
                 print(f"[Trainer] ONNX re-export skipped ({type(e).__name__}: {e})")
 
         return path
+
+    def _prune_old_checkpoints(self, ckpt_dir: Path) -> None:
+        """Keep only the `keep_last_checkpoints` most recent step_*.pt files.
+        Matches strictly the auto-named `step_<7 digits>.pt` pattern, so
+        latest.pt, net_step*.pt (pool) and *.pkl.gz are never matched.
+        Best-effort: any deletion error is logged and ignored."""
+        keep = int(getattr(self.cfg, "keep_last_checkpoints", 0))
+        if keep <= 0:
+            return
+        try:
+            import re
+            pat = re.compile(r"^step_\d{7}\.pt$")
+            files = [p for p in ckpt_dir.glob("step_*.pt") if pat.match(p.name)]
+            if len(files) <= keep:
+                return
+            # Sort by the embedded step number (ascending); delete all but
+            # the newest `keep`.
+            files.sort(key=lambda p: int(p.stem.split("_")[1]))
+            for p in files[:-keep]:
+                try:
+                    p.unlink()
+                except OSError as e:
+                    print(f"[Trainer] checkpoint prune skipped {p.name}: {e}")
+        except Exception as e:  # noqa: BLE001 — never let pruning break a save
+            print(f"[Trainer] checkpoint prune error: {type(e).__name__}: {e}")
 
     def _save_buffers(self) -> None:
         """Dump replay + teacher buffers as gzip-pickle next to the latest

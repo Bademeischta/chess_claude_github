@@ -346,6 +346,15 @@ class ChessAIConfig:
     # time at ~60 train_steps/h, bounding crash-loss to roughly the
     # batch-generation interval. Disk-cost is trivial (one .pt per file).
     checkpoint_every: int = 200
+    # Rolling retention of the periodic step_NNNNNNN.pt checkpoints. Each one
+    # is ~278 MB (model + optimizer + scheduler + RNG), and at
+    # checkpoint_every=200 they pile up fast — left unbounded they reached
+    # 159 files / 42 GB by step ~30k. save_checkpoint() now keeps only the
+    # `keep_last_checkpoints` most recent step files and deletes older ones
+    # (latest.pt, the opponent-pool net_step*.pt, and the buffer snapshots
+    # are NEVER touched). 0 = keep everything (legacy, unbounded). 8 ≈ the
+    # last ~1600 steps of resume points, ~2.2 GB.
+    keep_last_checkpoints: int = 8
     # Buffer snapshots (replay + teacher → pickle.gz next to checkpoint) every
     # N checkpoints. With checkpoint_every=200 and buffer_save_every=1 a
     # buffer dump lands every 200 steps (about every 30 min). Native crashes
