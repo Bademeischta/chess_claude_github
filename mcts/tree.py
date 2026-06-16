@@ -1293,7 +1293,14 @@ class ParallelMCTS:
         # white/black saw root_value < -resign_q from their own perspective.
         resign_q     = getattr(self.cfg, "resign_q", 0.0)
         resign_limit = getattr(self.cfg, "resign_streak", 0)
+        resign_off_p = float(getattr(self.cfg, "resign_disable_fraction", 0.0))
         streaks      = [[0, 0] for _ in range(self.n)]
+        # Per-slot resign toggle. A `resign_off_p` fraction of games play out
+        # to a real terminal (no resignation) so the net sees actual
+        # conversions/checkmates in its training data (audit: 93%-draw arena).
+        def _roll_resign() -> bool:
+            return random.random() >= resign_off_p
+        resign_on    = [_roll_resign() for _ in range(self.n)]
         for rec in records:
             rec.is_teacher = is_teacher
 
@@ -1337,6 +1344,7 @@ class ParallelMCTS:
                     records[i].is_teacher = is_teacher
                     move_nums[i] = 0
                     streaks[i]   = [0, 0]
+                    resign_on[i] = _roll_resign()
                     fresh.add(i)
                     if finished.move_numbers:  # only yield non-empty games
                         yield finished
@@ -1373,7 +1381,7 @@ class ParallelMCTS:
                 # and false resigns bias the training distribution toward
                 # pessimism in book positions.
                 side = board.side_to_move
-                if resign_limit > 0 and mn >= 20 and q_root < -resign_q:
+                if resign_limit > 0 and resign_on[i] and mn >= 20 and q_root < -resign_q:
                     streaks[i][side] += 1
                 else:
                     streaks[i][side] = 0
@@ -1385,7 +1393,7 @@ class ParallelMCTS:
 
                 result = get_game_result(new_board)
                 resign_loser = None
-                if resign_limit > 0:
+                if resign_limit > 0 and resign_on[i]:
                     if streaks[i][0] >= resign_limit:
                         resign_loser = 0  # white resigns
                     elif streaks[i][1] >= resign_limit:
@@ -1405,6 +1413,7 @@ class ParallelMCTS:
                     records[i].is_teacher = is_teacher
                     move_nums[i] = 0
                     streaks[i]   = [0, 0]
+                    resign_on[i] = _roll_resign()
                     fresh.add(i)
                     yield finished
 

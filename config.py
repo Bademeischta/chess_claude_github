@@ -224,6 +224,20 @@ class ChessAIConfig:
     # gate (added in mcts/tree.py) keeps early-opening noise out.
     resign_q: float = 0.55
     resign_streak: int = 6
+    # Fraction of self-play games that IGNORE the resign rule and play out to
+    # a real terminal (checkmate / stalemate / draw / move-cap). AlphaZero did
+    # exactly this (~10% no-resign games). Two reasons it matters here:
+    #   1. Calibration — confirms resign isn't throwing away winnable games.
+    #   2. THE big one for this project: with resign always on, the loser
+    #      gives up the moment it's down material, so self-play almost never
+    #      contains an actual CHECKMATE. The net therefore learns "win = the
+    #      opponent resigns once I'm ahead", NOT "win = deliver mate" — which
+    #      is exactly why it can't convert won positions vs a non-resigning
+    #      opponent (observed: 93% draws in the step-30k arena). Playing 15%
+    #      of games to the end — with Syzygy giving perfect endgame guidance
+    #      once ≤5 pieces — finally puts real conversions/mates in the
+    #      training data. 0.0 disables (legacy behaviour).
+    resign_disable_fraction: float = 0.15
 
     # ── Opening diversity (anti-overfitting on a few openings) ───────────
     # Each self-play game starts from a position obtained by playing this many

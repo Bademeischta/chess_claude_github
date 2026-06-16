@@ -224,3 +224,24 @@ def test_root_analysis_q_is_side_to_move_pov():
         "best (most-visited) move must report the highest per-move Q"
     assert best_q > 0.0, \
         f"a winning move must report a positive side-to-move Q, got {best_q}"
+
+
+# ── 6. resign-disable fraction: game_stream runs in both flag states ──────
+
+def test_resign_disable_fraction_runs(monkeypatch):
+    """Self-play must run cleanly with resignation fully ON (frac=0) and fully
+    OFF (frac=1). At frac=1 the resign rule is bypassed so games play out to a
+    real terminal / the move cap — the data path that finally feeds the net
+    real conversions + checkmates (audit: 93%-draw arena)."""
+    for frac in (0.0, 1.0):
+        pool = _make_pool(use_driver=False, n=2)
+        pool.cfg.mcts_sims = 8
+        pool.cfg.max_game_moves = 12
+        pool.cfg.random_opening_plies = 0
+        pool.cfg.resign_disable_fraction = frac
+        gen = pool.game_stream(is_teacher=False)
+        games = [next(gen) for _ in range(3)]
+        for g in games:
+            assert g.move_numbers, "yielded an empty game"
+            assert len(g.wdl_labels) == len(g.move_numbers)
+            assert len(g.sides) == len(g.move_numbers)
