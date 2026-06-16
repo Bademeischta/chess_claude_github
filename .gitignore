@@ -8,18 +8,15 @@ build/
 dist/
 *.egg-info/
 
-# Model checkpoints — tracked via Git LFS for specific files
-# checkpoints/ dir is NOT ignored so file-level negations work
-checkpoints/*.pt
-checkpoints/*.ckpt
+# Model checkpoints — NEVER commit these. Each step_*.pt is ~278 MB;
+# force-tracking latest.pt / step_* in the past bloated .git to ~3.8 GB.
+# They are training artifacts (regenerated continuously), not source —
+# keep them out of git entirely. To inspect/share a specific net, copy it
+# out of the repo manually rather than committing it.
+checkpoints/
 *.pt
 *.ckpt
-
-# Allow specific checkpoint files needed to resume / inspect training
-!checkpoints/latest.pt
-!checkpoints/step_0063400.pt
-!checkpoints/net_step0.pt
-!checkpoints/net_step35000.pt
+*.onnx
 
 # Training artifacts
 # runs/ is included (TensorBoard logs + supervisor.log)
