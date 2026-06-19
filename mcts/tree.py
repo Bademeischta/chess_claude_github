@@ -902,6 +902,7 @@ class ParallelMCTS:
         self.device = device
         self.n      = n_games if n_games is not None else cfg.parallel_games
         self._opening_fens: Optional[list] = None  # lazy opening-book cache
+        self._endgame_pool: Optional[list] = None  # lazy won-endgame FEN cache
         # One inference engine shared by every tree in the pool.
         self.engine = build_inference_engine(cfg, model, device)
         self.trees  = [MCTSTree(cfg, model, device, engine=self.engine)
@@ -1233,6 +1234,95 @@ class ParallelMCTS:
                 return board
         return Board.from_fen(STARTPOS_FEN)
 
+    # ── Endgame curriculum ───────────────────────────────────────────────
+    def _build_endgame_pool(self) -> list:
+        """Pre-sample a pool of WINNABLE Syzygy endgame FENs (side to move is
+        winning). Built lazily, once per pool instance. Random ≤max_pieces
+        material is generated with python-chess (probe-only utility use — NOT
+        move generation) and filtered by the tablebase so only positions the
+        side to move actually wins are kept. The net therefore always practises
+        CONVERTING a win into a real mate."""
+        from engine.rules import is_tablebase_available, probe_tablebase
+        from engine.board import Board
+
+        if not is_tablebase_available():
+            return []
+        max_pieces = int(getattr(self.cfg, "endgame_curriculum_max_pieces", 5))
+        target = int(getattr(self.cfg, "endgame_curriculum_pool_size", 1500))
+        max_pieces = min(max_pieces, 5)  # Syzygy probe ceiling
+
+        import chess
+        # Instructive textbook wins to guarantee the pool is never empty and
+        # always contains the canonical mating techniques.
+        seed_fens = [
+            "8/8/8/3k4/8/8/3R4/3K4 w - - 0 1",    # KR vs k
+            "8/8/8/3k4/8/3Q4/8/3K4 w - - 0 1",    # KQ vs k
+            "8/8/3k4/8/8/8/3KP3/8 w - - 0 1",     # KP vs k
+            "8/3k4/8/8/8/3K4/3PP3/8 w - - 0 1",   # K2P vs k
+            "8/8/8/2k5/8/8/2KBB3/8 w - - 0 1",    # K2B vs k
+        ]
+        pool: list = []
+        for fen in seed_fens:
+            try:
+                if probe_tablebase(Board.from_fen(fen)) == 1.0:
+                    pool.append(fen)
+            except Exception:
+                continue
+
+        piece_types = [chess.PAWN, chess.KNIGHT, chess.BISHOP,
+                       chess.ROOK, chess.QUEEN]
+        attempts = 0
+        max_attempts = target * 40
+        while len(pool) < target and attempts < max_attempts:
+            attempts += 1
+            try:
+                b = chess.Board.empty()
+                k_sq = random.randint(0, 63)
+                b.set_piece_at(k_sq, chess.Piece(chess.KING, chess.WHITE))
+                ok_sq = random.randint(0, 63)
+                while ok_sq == k_sq:
+                    ok_sq = random.randint(0, 63)
+                b.set_piece_at(ok_sq, chess.Piece(chess.KING, chess.BLACK))
+                # max_pieces includes the two kings.
+                for _ in range(random.randint(1, max_pieces - 2)):
+                    sq = random.randint(0, 63)
+                    while b.piece_at(sq):
+                        sq = random.randint(0, 63)
+                    pt = random.choice(piece_types)
+                    color = random.choice([chess.WHITE, chess.BLACK])
+                    # Pawns cannot live on the 1st/8th rank.
+                    if pt == chess.PAWN and chess.square_rank(sq) in (0, 7):
+                        continue
+                    b.set_piece_at(sq, chess.Piece(pt, color))
+                b.turn = random.choice([chess.WHITE, chess.BLACK])
+                b.clear_stack()
+                if not b.is_valid():
+                    continue
+                board = Board.from_fen(b.fen())
+                # Keep only positions the SIDE TO MOVE is winning → the net
+                # learns to convert, and the game is guaranteed decisive.
+                if probe_tablebase(board) == 1.0:
+                    pool.append(b.fen())
+            except Exception:
+                continue
+        return pool
+
+    def _get_endgame_pool(self) -> list:
+        pool = getattr(self, "_endgame_pool", None)
+        if pool is None:
+            pool = self._build_endgame_pool()
+            self._endgame_pool = pool
+        return pool
+
+    def _endgame_seed_fen(self) -> Optional[str]:
+        """A winnable endgame FEN with probability endgame_curriculum_fraction,
+        else None (→ normal opening seed)."""
+        frac = float(getattr(self.cfg, "endgame_curriculum_fraction", 0.0))
+        if frac <= 0.0 or random.random() >= frac:
+            return None
+        pool = self._get_endgame_pool()
+        return random.choice(pool) if pool else None
+
     def _finalize_record(self, rec: GameRecord, result: "GameResult") -> None:
         # Side to move at each recorded position. The recorded board side is
         # authoritative — mn%2 parity silently inverts EVERY label in a game
@@ -1286,7 +1376,6 @@ class ParallelMCTS:
         n_sims = self.cfg.mcts_sims_teacher if is_teacher else self.cfg.mcts_sims
         T      = self.cfg.gru_history_len
 
-        boards    = [self._fresh_board() for _ in range(self.n)]
         records   = [GameRecord() for _ in range(self.n)]
         move_nums = [0] * self.n
         # Per-game resign counter: streaks[i][0/1] = consecutive moves where
@@ -1300,7 +1389,22 @@ class ParallelMCTS:
         # conversions/checkmates in its training data (audit: 93%-draw arena).
         def _roll_resign() -> bool:
             return random.random() >= resign_off_p
-        resign_on    = [_roll_resign() for _ in range(self.n)]
+
+        # Seed a fresh game slot. An `endgame_curriculum_fraction` slice starts
+        # from a winnable Syzygy endgame and NEVER resigns — those games must
+        # be played out to a real mate so the net learns conversion technique.
+        # The rest get the normal opening seed with the usual resign roll.
+        def _new_seed():
+            from engine.board import Board
+            fen = self._endgame_seed_fen()
+            if fen is not None:
+                return Board.from_fen(fen), False
+            return self._fresh_board(), _roll_resign()
+
+        boards    = [None] * self.n
+        resign_on = [True] * self.n
+        for _i in range(self.n):
+            boards[_i], resign_on[_i] = _new_seed()
         for rec in records:
             rec.is_teacher = is_teacher
 
@@ -1339,12 +1443,11 @@ class ParallelMCTS:
                     # (audit P4-2 / P1-5).
                     finished = records[i]
                     self._finalize_record(finished, get_game_result(board))
-                    boards[i]    = self._fresh_board()
+                    boards[i], resign_on[i] = _new_seed()
                     records[i]   = GameRecord()
                     records[i].is_teacher = is_teacher
                     move_nums[i] = 0
                     streaks[i]   = [0, 0]
-                    resign_on[i] = _roll_resign()
                     fresh.add(i)
                     if finished.move_numbers:  # only yield non-empty games
                         yield finished
@@ -1408,12 +1511,11 @@ class ParallelMCTS:
                     finished = rec
                     # Re-seed this slot with a fresh game *before* yielding so
                     # the pool is already full again when the consumer resumes.
-                    boards[i]    = self._fresh_board()
+                    boards[i], resign_on[i] = _new_seed()
                     records[i]   = GameRecord()
                     records[i].is_teacher = is_teacher
                     move_nums[i] = 0
                     streaks[i]   = [0, 0]
-                    resign_on[i] = _roll_resign()
                     fresh.add(i)
                     yield finished
 

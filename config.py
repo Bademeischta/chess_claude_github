@@ -239,6 +239,27 @@ class ChessAIConfig:
     #      training data. 0.0 disables (legacy behaviour).
     resign_disable_fraction: float = 0.15
 
+    # ── Endgame curriculum (CONCRETE conversion / mate training) ─────────
+    # A fraction of self-play games start NOT from the opening but from a
+    # WINNABLE Syzygy endgame (≤ endgame_curriculum_max_pieces pieces, side
+    # to move is winning per the tablebase) and ALWAYS play out without
+    # resignation. Why this exists:
+    #   * The one-shot Phase-0 endgame pretrain used a UNIFORM policy target
+    #     (self_play.generate_endgame_pretrain) — it taught the value head
+    #     "this is won" but never the policy head HOW to win, and it ran once
+    #     on a random net then got washed out by tens of thousands of
+    #     self-play steps. Net result: "knows it's ahead, can't deliver mate".
+    #   * Normal self-play almost never reaches a clean, played-out endgame
+    #     (draws + resignation dominate), so conversion technique is never
+    #     practised.
+    # Seeding won endgames and playing them to the end with MCTS (Syzygy gives
+    # perfect leaf values ≤5 pieces) yields MCTS-quality conversion policies
+    # AND decisive value targets, continuously mixed into the replay buffer —
+    # no catastrophic forgetting. 0.0 disables.
+    endgame_curriculum_fraction: float = 0.12
+    endgame_curriculum_max_pieces: int = 5      # Syzygy probe ceiling
+    endgame_curriculum_pool_size: int = 1500    # # of pre-verified won FENs
+
     # ── Opening diversity (anti-overfitting on a few openings) ───────────
     # Each self-play game starts from a position obtained by playing this many
     # uniform-random legal plies from the standard start (NOT recorded as
