@@ -224,6 +224,38 @@ class GameSession:
         else:
             self._start_ponder()
 
+    def set_fen(self, fen: str, human_white: Optional[bool] = None) -> dict:
+        """Start a fresh game from an arbitrary FEN (analysis / endgame
+        practice / 'play from here'). If human_white is omitted, the human
+        takes the side to move."""
+        self._stop_ponder()
+        try:
+            nb = Board.from_fen(fen.strip())
+        except Exception:
+            return {"error": "invalid FEN"}
+        with self._lock:
+            if human_white is None:
+                human_white = (int(nb.side_to_move) == 0)
+            self.human_white = bool(human_white)
+            self.board       = nb
+            self.tree        = MCTSTree(self.cfg, self.model, self.device,
+                                        engine=self.engine)
+            self.tree.reset(self.board)
+            self.history     = []
+            self.game_over   = False
+            self.result_text = ""
+            self._check_game_over()
+        self.emit("new_game", {
+            "fen": nb.to_fen(),
+            "human_white": self.human_white,
+            "settings": self.settings_dict(),
+        })
+        if not self.game_over and not self._is_human_turn():
+            self._ai_move_async()
+        elif not self.game_over:
+            self._start_ponder()
+        return {"ok": True, "fen": nb.to_fen(), "human_white": self.human_white}
+
     def _is_human_turn(self) -> bool:
         if self.board is None:
             return False
@@ -884,6 +916,146 @@ def _analysis_for_wire(a: dict) -> dict:
     }
 
 
+def _threat_map(board) -> dict:
+    """Squares attacked by each side + hanging pieces for the current board,
+    computed with python-chess (probe-only utility use — NOT move generation).
+    Powers the web-UI threat overlay. Returns {} if python-chess is missing."""
+    try:
+        import chess as _c
+    except Exception:
+        return {}
+    try:
+        b = _c.Board(board.to_fen())
+    except Exception:
+        return {}
+    vals = {_c.PAWN: 1, _c.KNIGHT: 3, _c.BISHOP: 3,
+            _c.ROOK: 5, _c.QUEEN: 9, _c.KING: 0}
+    white_atk, black_atk = [], []
+    for sq in _c.SQUARES:
+        if b.is_attacked_by(_c.WHITE, sq):
+            white_atk.append(_c.square_name(sq))
+        if b.is_attacked_by(_c.BLACK, sq):
+            black_atk.append(_c.square_name(sq))
+    hanging = []
+    for sq, piece in b.piece_map().items():
+        if piece.piece_type == _c.KING:
+            continue
+        attackers = b.attackers(not piece.color, sq)
+        if not attackers:
+            continue
+        defenders = b.attackers(piece.color, sq)
+        pv = vals[piece.piece_type]
+        cheapest = min(vals[b.piece_at(a).piece_type] for a in attackers)
+        # Loose = undefended while attacked, OR a cheaper piece can capture it
+        # (a winning trade for the attacker). Simplified static eval, no x-rays.
+        if (not defenders) or (cheapest < pv):
+            hanging.append({"sq": _c.square_name(sq),
+                            "sym": piece.symbol(),
+                            "white": bool(piece.color)})
+    return {
+        "white_attacks": white_atk,
+        "black_attacks": black_atk,
+        "hanging": hanging,
+        "stm": "w" if b.turn else "b",
+        "in_check": b.is_check(),
+    }
+
+
+_EA_CACHE: dict = {"path": None, "ea": None}
+_EA_LOCK = threading.Lock()
+
+
+def _training_snapshot() -> dict:
+    """LIVE training stats for the web monitor. Loss / lr / entropy /
+    throughput / buffer sizes / VRAM come straight from the newest TensorBoard
+    event file (written every step by the trainer); ELO comes from
+    pool_state.json. The EventAccumulator is cached and reloaded incrementally
+    so the 4-second poll stays cheap. Missing sources just yield nulls so the
+    panel degrades gracefully."""
+    out = {k: None for k in (
+        "step", "loss_total", "p", "v", "kl", "aux", "lr", "entropy",
+        "pos_s", "games_hr", "replay", "teacher", "vram",
+        "elo", "best_elo")}
+    out["ts"] = time.time()
+    root = Path(_root)
+
+    # ELO + best ELO from the opponent pool.
+    try:
+        ps = root / str(CONFIG.checkpoint_dir) / "pool_state.json"
+        if ps.exists():
+            d = json.loads(ps.read_text(encoding="utf-8", errors="ignore"))
+            ratings = {k: float(v) for k, v in d.get("elo_ratings", {}).items()}
+            cur = d.get("current_id")
+            if cur in ratings:
+                out["elo"] = round(ratings[cur], 1)
+            if ratings:
+                out["best_elo"] = round(max(ratings.values()), 1)
+    except Exception:
+        pass
+
+    # Live scalars from the newest tfevents file (incrementally reloaded).
+    try:
+        import glob
+        import os
+        from tensorboard.backend.event_processing.event_accumulator \
+            import EventAccumulator
+        evs = glob.glob(str(root / "runs" / "events.out.tfevents.*"))
+        if evs:
+            newest = max(evs, key=os.path.getmtime)
+            with _EA_LOCK:
+                ea = _EA_CACHE.get("ea")
+                if _EA_CACHE.get("path") != newest or ea is None:
+                    ea = EventAccumulator(newest, size_guidance={"scalars": 64})
+                    _EA_CACHE["path"] = newest
+                    _EA_CACHE["ea"] = ea
+                ea.Reload()
+                avail = set(ea.Tags().get("scalars", []))
+
+                def last(tag):
+                    if tag not in avail:
+                        return None
+                    try:
+                        pts = ea.Scalars(tag)
+                        return max(pts, key=lambda s: s.step).value if pts else None
+                    except Exception:
+                        return None
+
+                tagmap = {
+                    "step": "global_step", "loss_total": "loss/total",
+                    "p": "loss/policy", "v": "loss/value",
+                    "kl": "loss/teacher_kl", "aux": "loss/aux", "lr": "lr",
+                    "entropy": "policy_entropy",
+                    "pos_s": "throughput/positions_per_sec",
+                    "games_hr": "throughput/games_per_hour",
+                    "replay": "replay_buf_size", "teacher": "teacher_buf_size",
+                    "vram": "memory/vram_used_mb",
+                }
+                for key, tag in tagmap.items():
+                    v = last(tag)
+                    if v is not None:
+                        out[key] = v
+            if out["step"] is not None:
+                out["step"] = int(out["step"])
+    except Exception:
+        pass
+
+    # Fallback: derive the step from the newest checkpoint filename.
+    if out["step"] is None:
+        try:
+            import glob
+            import os
+            import re
+            cks = glob.glob(str(root / str(CONFIG.checkpoint_dir) / "step_*.pt"))
+            if cks:
+                m = re.search(r"step_(\d+)\.pt",
+                              max(cks, key=os.path.getmtime))
+                if m:
+                    out["step"] = int(m.group(1))
+        except Exception:
+            pass
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # HTTP / SSE plumbing
 # ─────────────────────────────────────────────────────────────────────────
@@ -988,6 +1160,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/stream":
             self._stream_sse()
             return
+        if self.path == "/api/training":
+            self._send_json(200, _training_snapshot())
+            return
+        if self.path == "/api/threats":
+            with SESSION._lock:
+                board = SESSION.board
+            self._send_json(200, _threat_map(board) if board else {})
+            return
         self._send(404, b"not found", "text/plain")
 
     def _stream_sse(self):
@@ -1049,6 +1229,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/hint":
             self._send_json(200, SESSION.hint())
+            return
+        if self.path == "/api/setfen":
+            self._send_json(200, SESSION.set_fen(
+                str(data.get("fen", "")), data.get("human_white")))
             return
         self._send_json(404, {"error": "unknown endpoint"})
 
@@ -1265,6 +1449,65 @@ PAGE = r"""<!doctype html>
   /* Board heatmap squares (destination focus of the search) */
   .heat{position:absolute;border-radius:3px;pointer-events:none;
         mix-blend-mode:screen}
+
+  /* ── Pro feature pack ─────────────────────────────────────────────── */
+  .protools{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .protools button{padding:6px 10px;font-size:12px}
+  .protools .tbtn.on{background:var(--accent);color:#0b0d10;border-color:var(--accent)}
+  .opening-chip{font-size:11px;color:var(--ink-dim);padding:3px 9px;border-radius:999px;
+                border:1px solid var(--border);background:var(--bg-2);white-space:nowrap}
+  /* Threat / attack overlay on the board */
+  .threats{position:absolute;left:0;top:0;width:100%;height:100%;
+           pointer-events:none;z-index:4}
+  .threats .tsq{position:absolute;width:12.5%;height:12.5%}
+  .threats .atk-w{box-shadow:inset 0 0 0 3px rgba(61,220,151,.5)}
+  .threats .atk-b{box-shadow:inset 0 0 0 3px rgba(255,111,111,.5)}
+  .threats .atk-both{box-shadow:inset 0 0 0 3px rgba(255,180,84,.6)}
+  .threats .hang{background:radial-gradient(circle,rgba(255,111,111,.55),
+                 rgba(255,111,111,0) 70%)}
+  /* Training monitor */
+  .tm-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px}
+  .tm-cell{display:flex;flex-direction:column}
+  .tm-cell .k{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-fade)}
+  .tm-cell .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+  .tm-cell .v.good{color:var(--good)}.tm-cell .v.warn{color:var(--warn)}
+  .tm-stale{font-size:11px;color:var(--warn)}
+  /* Accuracy / review */
+  .acc-row{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+  .acc-pill{flex:1;text-align:center;padding:8px;border-radius:8px;
+            border:1px solid var(--border);background:var(--bg-2)}
+  .acc-pill .big{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+  .acc-pill .lbl{font-size:10px;color:var(--ink-fade);text-transform:uppercase;letter-spacing:.1em}
+  .acc-counts{display:flex;gap:6px;flex-wrap:wrap;font-size:11px}
+  .acc-counts span{padding:2px 7px;border-radius:5px;border:1px solid var(--border);background:var(--bg-2)}
+  .acc-counts .bril{color:#7ee0d2;border-color:rgba(126,224,210,.35)}
+  .acc-counts .blu{color:var(--bad);border-color:rgba(255,111,111,.35)}
+  .acc-counts .mis{color:var(--warn);border-color:rgba(255,180,84,.35)}
+  .glyph{font-weight:700;margin-left:4px}
+  .glyph.bril{color:#7ee0d2}.glyph.good{color:var(--good)}
+  .glyph.inacc{color:var(--warn)}.glyph.mis{color:#ff9d5c}.glyph.blu{color:var(--bad)}
+  /* Review banner */
+  #reviewbar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;
+             z-index:50;display:none;gap:8px;align-items:center;padding:8px 12px;
+             background:var(--bg-2);border:1px solid var(--accent);border-radius:10px;
+             box-shadow:var(--shadow)}
+  #reviewbar.show{display:flex}
+  /* Help overlay */
+  #helpov{position:fixed;inset:0;z-index:60;display:none;align-items:center;
+          justify-content:center;background:rgba(0,0,0,.6)}
+  #helpov.show{display:flex}
+  #helpov .box{background:var(--bg-1);border:1px solid var(--border);border-radius:14px;
+               padding:22px;max-width:460px;box-shadow:var(--shadow)}
+  #helpov kbd{background:var(--bg-3);border:1px solid var(--border);border-radius:5px;
+              padding:1px 7px;font-family:Consolas,monospace;font-size:12px}
+  #helpov table{width:100%;border-collapse:collapse}
+  #helpov td{padding:5px 6px;border-bottom:1px dashed rgba(255,255,255,.06)}
+  /* Focus mode hides the right column, enlarges the board */
+  body.focusmode .right{display:none}
+  body.focusmode .wrap{grid-template-columns:1fr;max-width:820px}
+  /* Coordinates toggle (chessboard.js notation) */
+  body.no-coords .notation-322f9{display:none !important}
+  .moverow.reviewing{outline:1px solid var(--accent);border-radius:4px}
 </style>
 </head><body>
 
@@ -2120,6 +2363,398 @@ fetch('/api/state').then(r => r.json()).then(s => {
 connectStream();
 
 window.addEventListener('resize', () => { if (board) board.resize(); });
+</script>
+
+<!-- ════════════════════ Chess AI — PRO FEATURE PACK ════════════════════ -->
+<script>
+(function(){
+  'use strict';
+  const $  = id => document.getElementById(id);
+  const elc = (tag, cls, html) => { const e=document.createElement(tag);
+        if(cls) e.className=cls; if(html!=null) e.innerHTML=html; return e; };
+  const LS = window.localStorage;
+  const get = (k,d) => { const v=LS.getItem(k); return v===null?d:v; };
+
+  // ── State ────────────────────────────────────────────────────────────
+  let proHist=[], prevFen=null, reviewPly=null;
+  let threatsOn = get('pp_threats','0')==='1';
+  let soundOn   = get('pp_sound','1')==='1';
+
+  // ── Threat overlay (inside the board stage) ──────────────────────────
+  const stage = document.querySelector('.board-stage');
+  const tov = elc('div','threats'); tov.id='threats';
+  if (stage) stage.appendChild(tov);
+
+  // ── Pro toolbar (prepended to the left column) ───────────────────────
+  const bar = elc('div','card');
+  bar.innerHTML =
+    '<h3>Pro tools</h3>'+
+    '<div class="protools">'+
+      '<button class="tbtn" data-a="flip" title="Flip board (F)">⟲ Flip</button>'+
+      '<button class="tbtn" data-a="coords" title="Toggle coordinates">#</button>'+
+      '<button class="tbtn" data-a="theme" title="Cycle theme">🎨 Theme</button>'+
+      '<button class="tbtn" data-a="sound" title="Toggle sound">🔊</button>'+
+      '<button class="tbtn" data-a="threats" title="Threat overlay">⚠ Threats</button>'+
+      '<button class="tbtn" data-a="focus" title="Focus / zen mode">⛶ Focus</button>'+
+      '<button class="tbtn" data-a="pgn" title="Download PGN">⭳ PGN</button>'+
+      '<button class="tbtn" data-a="cfen" title="Copy FEN">FEN</button>'+
+      '<button class="tbtn" data-a="cpgn" title="Copy PGN">⧉ PGN</button>'+
+      '<button class="tbtn" data-a="loadfen" title="Play from a FEN">Load FEN</button>'+
+      '<button class="tbtn" data-a="help" title="Keyboard shortcuts (?)">?</button>'+
+      '<span class="opening-chip" id="openingChip">—</span>'+
+    '</div>';
+  const leftCol = document.querySelector('.left');
+  if (leftCol) leftCol.insertBefore(bar, leftCol.firstChild);
+
+  // ── Training monitor card (right column) ─────────────────────────────
+  const tmCard = elc('div','card');
+  tmCard.innerHTML = '<h3>Training monitor <span id="tmStale" class="tm-stale"></span></h3>'+
+    '<div class="tm-grid" id="tmGrid"></div>';
+  // ── Accuracy / review card (right column) ────────────────────────────
+  const accCard = elc('div','card');
+  accCard.innerHTML = '<h3>Game accuracy &amp; review</h3>'+
+    '<div class="acc-row">'+
+      '<div class="acc-pill"><div class="big" id="accW">—</div><div class="lbl">White</div></div>'+
+      '<div class="acc-pill"><div class="big" id="accB">—</div><div class="lbl">Black</div></div>'+
+    '</div>'+
+    '<div class="acc-counts" id="accCounts"></div>'+
+    '<div style="font-size:11px;color:var(--ink-fade);margin-top:8px">'+
+      'Click a move below, or use ← / → to step through the game.</div>';
+  const rightCol = document.querySelector('.right');
+  if (rightCol){ rightCol.appendChild(tmCard); rightCol.appendChild(accCard); }
+
+  // ── Fixed chrome: review bar + help overlay ──────────────────────────
+  const rbar = elc('div'); rbar.id='reviewbar';
+  rbar.innerHTML = '<button data-r="first">⏮</button><button data-r="prev">◀</button>'+
+    '<span id="reviewlbl" style="font-variant-numeric:tabular-nums">review</span>'+
+    '<button data-r="next">▶</button><button data-r="last">⏭</button>'+
+    '<button data-r="live" class="primary">● Live</button>';
+  document.body.appendChild(rbar);
+
+  const help = elc('div'); help.id='helpov';
+  help.innerHTML = '<div class="box"><h3 style="margin-top:0">Keyboard shortcuts</h3>'+
+    '<table>'+
+    '<tr><td><kbd>N</kbd></td><td>New game (you as White)</td></tr>'+
+    '<tr><td><kbd>F</kbd></td><td>Flip board</td></tr>'+
+    '<tr><td><kbd>H</kbd></td><td>Hint</td></tr>'+
+    '<tr><td><kbd>T</kbd></td><td>Takeback</td></tr>'+
+    '<tr><td><kbd>R</kbd></td><td>Resign</td></tr>'+
+    '<tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Step through game (review)</td></tr>'+
+    '<tr><td><kbd>Esc</kbd></td><td>Back to live / close</td></tr>'+
+    '<tr><td><kbd>?</kbd></td><td>This help</td></tr>'+
+    '</table><div style="text-align:right;margin-top:10px">'+
+    '<button data-r="closehelp" class="primary">Got it</button></div></div>';
+  document.body.appendChild(help);
+
+  // ── Sound (WebAudio, no assets) ──────────────────────────────────────
+  let actx=null;
+  function beep(freq,dur,type,gain){ if(!soundOn) return;
+    try{ actx=actx||new (window.AudioContext||window.webkitAudioContext)();
+      const o=actx.createOscillator(), g=actx.createGain();
+      o.type=type||'sine'; o.frequency.value=freq; g.gain.value=gain||0.04;
+      o.connect(g); g.connect(actx.destination); o.start();
+      g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime+(dur||0.12));
+      o.stop(actx.currentTime+(dur||0.13)); }catch(e){}
+  }
+  const sMove=()=>beep(440,0.07,'triangle',0.05);
+  const sCap =()=>beep(190,0.12,'sawtooth',0.06);
+  const sChk =()=>beep(720,0.16,'square',0.045);
+  const sEnd =()=>{ beep(330,0.28,'sine',0.06); setTimeout(()=>beep(247,0.4,'sine',0.06),150); };
+
+  // ── Opening detection (longest-prefix match) ─────────────────────────
+  const OPEN = [
+    [['e2e4'],'King’s Pawn'],[['d2d4'],'Queen’s Pawn'],
+    [['c2c4'],'English Opening'],[['g1f3'],'Réti Opening'],
+    [['e2e4','e7e5'],'Open Game'],[['e2e4','c7c5'],'Sicilian Defense'],
+    [['e2e4','e7e6'],'French Defense'],[['e2e4','c7c6'],'Caro-Kann'],
+    [['e2e4','d7d5'],'Scandinavian'],[['e2e4','g8f6'],'Alekhine Defense'],
+    [['e2e4','d7d6'],'Pirc Defense'],[['e2e4','b8c6'],'Nimzowitsch Def.'],
+    [['e2e4','g7g6'],'Modern Defense'],
+    [['e2e4','e7e5','g1f3','b8c6','f1b5'],'Ruy López'],
+    [['e2e4','e7e5','g1f3','b8c6','f1c4'],'Italian Game'],
+    [['e2e4','e7e5','g1f3','b8c6','d2d4'],'Scotch Game'],
+    [['e2e4','e7e5','g1f3','g8f6'],'Petrov Defense'],
+    [['e2e4','c7c5','g1f3','d7d6'],'Sicilian: Najdorf-ish'],
+    [['d2d4','d7d5'],'Closed Game'],[['d2d4','g8f6'],'Indian Defense'],
+    [['d2d4','d7d5','c2c4'],'Queen’s Gambit'],
+    [['d2d4','d7d5','c2c4','e7e6'],'QGD'],
+    [['d2d4','d7d5','c2c4','c7c6'],'Slav Defense'],
+    [['d2d4','g8f6','c2c4','g7g6'],'King’s Indian'],
+    [['d2d4','g8f6','c2c4','e7e6'],'Nimzo/QID'],
+    [['d2d4','f7f5'],'Dutch Defense'],
+  ];
+  function openingName(ucis){ let best='—', bl=0;
+    for(const [seq,name] of OPEN){
+      if(seq.length<=ucis.length && seq.length>bl && seq.every((u,i)=>u===ucis[i])){
+        best=name; bl=seq.length; } }
+    return best;
+  }
+
+  // ── Accuracy (from per-move eval vs best_eval) ───────────────────────
+  function classify(delta){
+    if(delta==null) return ['',''];
+    if(delta<0.02) return ['!!','bril'];
+    if(delta<0.05) return ['!','good'];
+    if(delta<0.15) return ['','' ];
+    if(delta<0.40) return ['?!','inacc'];
+    if(delta<0.90) return ['?','mis'];
+    return ['??','blu'];
+  }
+  function accFromDelta(delta){ // crude human-move accuracy curve
+    if(delta==null) return null;
+    return Math.max(0, Math.min(100, 100*Math.exp(-2.6*Math.max(0,delta))));
+  }
+  function renderAccuracy(){
+    let accs={w:[],b:[]}, cnt={bril:0,blu:0,mis:0,inacc:0};
+    for(const h of proHist){
+      if(h.by!=='human') continue;
+      if(h.eval==null||h.best_eval==null||h.low_confidence) continue;
+      const delta=Math.max(0,(h.best_eval||0)-(h.eval||0));
+      const side=(h.ply%2===1)?'w':'b';
+      const a=accFromDelta(delta); if(a!=null) accs[side].push(a);
+      const [g,c]=classify(delta);
+      if(c==='bril') cnt.bril++; else if(c==='blu') cnt.blu++;
+      else if(c==='mis') cnt.mis++; else if(c==='inacc') cnt.inacc++;
+    }
+    const avg=a=>a.length?Math.round(a.reduce((s,x)=>s+x,0)/a.length):null;
+    const aw=avg(accs.w), ab=avg(accs.b);
+    $('accW').textContent = aw==null?'—':aw+'%';
+    $('accB').textContent = ab==null?'—':ab+'%';
+    $('accCounts').innerHTML =
+      '<span class="bril">'+cnt.bril+' brilliant</span>'+
+      '<span class="inacc">'+cnt.inacc+' inacc.</span>'+
+      '<span class="mis">'+cnt.mis+' mistakes</span>'+
+      '<span class="blu">'+cnt.blu+' blunders</span>';
+    decorateHistory();
+  }
+  // Make the existing history rows hoverable + clickable for review.
+  function decorateHistory(){
+    const hist=$('history'); if(!hist) return;
+    hist.querySelectorAll('.row').forEach(row=>row.classList.add('moverow'));
+  }
+
+  // ── Threat overlay ───────────────────────────────────────────────────
+  function squareBox(sq){ const c=(typeof squareCenter==='function')?squareCenter(sq):null;
+    if(!c) return null; return {l:c.x-6.25, t:c.y-6.25}; }
+  async function refreshThreats(){
+    if(!threatsOn || reviewPly!=null){ tov.innerHTML=''; return; }
+    try{ const r=await fetch('/api/threats'); const t=await r.json(); drawThreats(t); }
+    catch(e){ /* offline / between games */ }
+  }
+  function drawThreats(t){
+    tov.innerHTML=''; if(!t||!t.hanging) return;
+    for(const h of t.hanging){
+      const b=squareBox(h.sq); if(!b) continue;
+      const d=elc('div','tsq hang'); d.style.left=b.l+'%'; d.style.top=b.t+'%';
+      d.title=(h.white?'White ':'Black ')+h.sym+' is loose on '+h.sq;
+      tov.appendChild(d);
+    }
+  }
+
+  // ── Themes ───────────────────────────────────────────────────────────
+  const THEMES = {
+    midnight:{}, // default :root
+    light:{'--bg-0':'#eef1f5','--bg-1':'#ffffff','--bg-2':'#f4f6f9','--bg-3':'#e7ebf1',
+           '--ink':'#10151b','--ink-dim':'#475263','--ink-fade':'#8b97a6','--border':'#d3dae3',
+           '--shadow':'0 6px 24px rgba(40,60,90,.12)'},
+    emerald:{'--bg-0':'#06120e','--bg-1':'#0c1d16','--bg-2':'#102a20','--bg-3':'#16362a',
+             '--accent':'#37e0a0','--good':'#7ef0c8','--border':'#1c4234'},
+    rose:{'--bg-0':'#160a10','--bg-1':'#221019','--bg-2':'#2c1521','--bg-3':'#3a1c2c',
+          '--accent':'#ff7eb6','--good':'#ffa9d0','--border':'#43202f'},
+  };
+  const THORDER=['midnight','light','emerald','rose'];
+  let themeStyle=elc('style'); themeStyle.id='protheme'; document.head.appendChild(themeStyle);
+  function applyTheme(name){
+    const vars=THEMES[name]||{}; let css=':root{';
+    for(const k in vars) css+=k+':'+vars[k]+';'; css+='}';
+    themeStyle.textContent=css; LS.setItem('pp_theme',name);
+    document.body.classList.toggle('lighttheme', name==='light');
+  }
+  applyTheme(get('pp_theme','midnight'));
+
+  // ── PGN / FEN ────────────────────────────────────────────────────────
+  function curPGN(){ try{ return game.pgn({max_width:80,newline_char:'\n'})||''; }catch(e){ return ''; } }
+  function dl(name,text){ const b=new Blob([text],{type:'text/plain'});
+    const u=URL.createObjectURL(b); const a=elc('a'); a.href=u; a.download=name;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u); }
+  async function copy(text){ try{ await navigator.clipboard.writeText(text); flash('Copied'); }
+    catch(e){ const ta=elc('textarea'); ta.value=text; document.body.appendChild(ta);
+      ta.select(); try{document.execCommand('copy');flash('Copied');}catch(_){} ta.remove(); } }
+  let flashT=null;
+  function flash(msg){ let f=$('ppflash'); if(!f){ f=elc('div'); f.id='ppflash';
+      f.style.cssText='position:fixed;bottom:18px;right:18px;z-index:70;padding:8px 14px;'+
+        'background:var(--accent);color:#0b0d10;border-radius:8px;font-weight:600;box-shadow:var(--shadow)';
+      document.body.appendChild(f); }
+    f.textContent=msg; f.style.opacity='1'; clearTimeout(flashT);
+    flashT=setTimeout(()=>{ f.style.transition='opacity .4s'; f.style.opacity='0'; },1100);
+  }
+  function pgnHeaders(){ const d=new Date().toISOString().slice(0,10);
+    return '[Event "Chess AI web"]\n[Site "local"]\n[Date "'+d+'"]\n'+
+      '[White "'+(humanWhite?'You':'ChessAI')+'"]\n[Black "'+(humanWhite?'ChessAI':'You')+'"]\n\n'; }
+
+  // ── Board controls ───────────────────────────────────────────────────
+  function flip(){ if(board) board.flip(); setTimeout(refreshThreats,60); }
+  function toggleCoords(){ document.body.classList.toggle('no-coords');
+    LS.setItem('pp_coords', document.body.classList.contains('no-coords')?'0':'1'); }
+  function toggleFocus(){ document.body.classList.toggle('focusmode');
+    setTimeout(()=>{ if(board) board.resize(); refreshThreats(); },60); }
+  function cycleTheme(){ const cur=get('pp_theme','midnight');
+    applyTheme(THORDER[(THORDER.indexOf(cur)+1)%THORDER.length]); }
+  function toggleSound(){ soundOn=!soundOn; LS.setItem('pp_sound',soundOn?'1':'0'); syncBtns();
+    if(soundOn) sMove(); }
+  function toggleThreats(){ threatsOn=!threatsOn; LS.setItem('pp_threats',threatsOn?'1':'0');
+    syncBtns(); refreshThreats(); }
+  function loadFen(){ const f=prompt('Paste a FEN to play from:'); if(f&&f.trim())
+    post('/api/setfen',{fen:f.trim()}).then(r=>{ if(r&&r.error) alert(r.error); }); }
+
+  // ── Review mode ──────────────────────────────────────────────────────
+  function maxPly(){ return proHist.length; }
+  function fenAtPly(p){ // reconstruct from startpos by replaying recorded ucis
+    try{ const tmp=new Chess();
+      for(let i=0;i<p && i<proHist.length;i++){ const u=proHist[i].uci||'';
+        if(u.length<4) return null;
+        tmp.move({from:u.slice(0,2),to:u.slice(2,4),promotion:(u[4]||'q')}); }
+      return tmp.fen();
+    }catch(e){ return null; }
+  }
+  function enterReview(p){ p=Math.max(0,Math.min(maxPly(),p));
+    const fen=fenAtPly(p); if(fen==null){ flash('Review N/A (custom start)'); return; }
+    reviewPly=p; if(board) board.position(fen,false); tov.innerHTML='';
+    rbar.classList.add('show');
+    $('reviewlbl').textContent='ply '+p+' / '+maxPly();
+  }
+  function reviewLive(){ reviewPly=null; rbar.classList.remove('show');
+    if(board && typeof game!=='undefined') board.position(game.fen()); refreshThreats(); }
+  function reviewStep(d){ if(reviewPly==null) enterReview(maxPly()+d); else enterReview(reviewPly+d); }
+
+  // ── Training monitor poll ────────────────────────────────────────────
+  function fmt(v,dp){ return (v==null)?'—':(dp!=null?Number(v).toFixed(dp):v); }
+  let lastStep=null, lastStepTs=0;
+  async function refreshTraining(){
+    let d; try{ d=await (await fetch('/api/training')).json(); }catch(e){ return; }
+    const cells=[
+      ['Step', d.step!=null?d.step.toLocaleString():'—',''],
+      ['ELO', fmt(d.elo,1), 'good'],
+      ['Loss total', fmt(d.loss_total,3),''],
+      ['Policy loss', fmt(d.p,3),''],
+      ['Value loss', fmt(d.v,3),''],
+      ['Teacher KL', fmt(d.kl,3),''],
+      ['Entropy', fmt(d.entropy,2),''],
+      ['LR', d.lr!=null?Number(d.lr).toExponential(2):'—',''],
+      ['Throughput', d.pos_s!=null?(Number(d.pos_s).toFixed(0)+' pos/s'):'—',''],
+      ['Games/hr', d.games_hr!=null?Math.round(d.games_hr).toLocaleString():'—',''],
+      ['Replay buf', d.replay!=null?Math.round(d.replay).toLocaleString():'—',''],
+      ['VRAM', d.vram!=null?(Math.round(d.vram)+' MB'):'—',''],
+    ];
+    $('tmGrid').innerHTML = cells.map(([k,v,c])=>
+      '<div class="tm-cell"><span class="k">'+k+'</span><span class="v '+(c||'')+'">'+v+'</span></div>'
+    ).join('');
+    // "alive" detector: did the step advance recently?
+    const now=Date.now()/1000;
+    if(d.step!=null && d.step!==lastStep){ lastStep=d.step; lastStepTs=now; }
+    let st='';
+    if(d.step==null) st='(no run data yet)';
+    else if(now-lastStepTs>120) st='● idle (no new steps)';
+    else st='● live';
+    $('tmStale').textContent=st;
+    $('tmStale').style.color = st==='● live' ? 'var(--good)' : 'var(--warn)';
+  }
+
+  // ── Wire toolbar + review + help buttons ─────────────────────────────
+  function syncBtns(){
+    document.querySelectorAll('.tbtn').forEach(b=>{
+      const a=b.dataset.a;
+      if(a==='sound'){ b.classList.toggle('on',soundOn); b.textContent=soundOn?'🔊':'🔇'; }
+      if(a==='threats') b.classList.toggle('on',threatsOn);
+      if(a==='focus') b.classList.toggle('on',document.body.classList.contains('focusmode'));
+    });
+  }
+  bar.addEventListener('click',e=>{ const b=e.target.closest('.tbtn'); if(!b) return;
+    const a=b.dataset.a;
+    if(a==='flip') flip();
+    else if(a==='coords') toggleCoords();
+    else if(a==='theme') cycleTheme();
+    else if(a==='sound') toggleSound();
+    else if(a==='threats') toggleThreats();
+    else if(a==='focus') toggleFocus();
+    else if(a==='pgn') dl('chessai_game.pgn', pgnHeaders()+curPGN());
+    else if(a==='cfen'){ try{ copy(game.fen()); }catch(_){ } }
+    else if(a==='cpgn') copy(pgnHeaders()+curPGN());
+    else if(a==='loadfen') loadFen();
+    else if(a==='help') help.classList.add('show');
+  });
+  rbar.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return;
+    const r=b.dataset.r;
+    if(r==='first') enterReview(0); else if(r==='prev') reviewStep(-1);
+    else if(r==='next') reviewStep(1); else if(r==='last') enterReview(maxPly());
+    else if(r==='live') reviewLive(); });
+  help.addEventListener('click',e=>{ if(e.target===help||e.target.dataset.r==='closehelp')
+    help.classList.remove('show'); });
+  // Click a move in the existing history list → review that ply.
+  const histEl=$('history');
+  if(histEl) histEl.addEventListener('click',e=>{ const row=e.target.closest('.row');
+    if(!row) return; const rows=[...histEl.querySelectorAll('.row')];
+    const idx=rows.indexOf(row); if(idx<0) return;
+    // each row holds a move PAIR (white+black) → jump to end of that pair
+    enterReview(Math.min(maxPly(),(idx+1)*2)); });
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────
+  document.addEventListener('keydown',e=>{
+    if(e.target.matches('input,textarea,select')) return;
+    const k=e.key;
+    if(k==='ArrowLeft'){ reviewStep(-1); e.preventDefault(); }
+    else if(k==='ArrowRight'){ reviewStep(1); e.preventDefault(); }
+    else if(k==='Escape'){ if(help.classList.contains('show')) help.classList.remove('show');
+      else if(reviewPly!=null) reviewLive(); }
+    else if(k==='?'||(k==='/'&&e.shiftKey)) help.classList.toggle('show');
+    else if(k==='f'||k==='F') flip();
+    else if(k==='n'||k==='N'){ if(typeof newGame==='function') newGame(true); }
+    else if(k==='h'||k==='H'){ if(typeof hint==='function') hint(); }
+    else if(k==='t'||k==='T'){ if(typeof takeback==='function') takeback(); }
+    else if(k==='r'||k==='R'){ if(typeof resign==='function') resign(); }
+  });
+
+  // ── Own SSE stream (additive; server supports many clients) ──────────
+  function pieceCount(fen){ return (fen.split(' ')[0].match(/[a-zA-Z]/g)||[]).length; }
+  function reactMove(newFen){
+    let cap=false, chk=false;
+    if(prevFen && newFen) cap = pieceCount(newFen) < pieceCount(prevFen);
+    try{ chk = new Chess(newFen).in_check(); }catch(_){}
+    if(chk) sChk(); else if(cap) sCap(); else sMove();
+    prevFen=newFen;
+  }
+  function ingest(data, isMove){
+    if(data.history) proHist=data.history;
+    if(data.fen!=null) prevFen=prevFen||data.fen;
+    const ucis=proHist.map(h=>h.uci).filter(Boolean);
+    const oc=$('openingChip'); if(oc) oc.textContent=openingName(ucis);
+    renderAccuracy();
+    if(reviewPly==null) refreshThreats();
+    if(isMove && data.fen) reactMove(data.fen);
+    if(data.game_over) sEnd();
+  }
+  try{
+    const es=new EventSource('/api/stream');
+    const on=(name,fn)=>es.addEventListener(name,e=>{ try{ fn(JSON.parse(e.data)); }catch(_){} });
+    on('snapshot', d=>{ proHist=d.history||[]; prevFen=d.fen||null; reviewPly=null;
+                        rbar.classList.remove('show'); ingest(d,false); });
+    on('new_game', d=>{ proHist=[]; prevFen=d.fen||null; reviewPly=null;
+                        rbar.classList.remove('show');
+                        const oc=$('openingChip'); if(oc) oc.textContent='—';
+                        renderAccuracy(); refreshThreats(); });
+    on('user_move', d=>ingest(d,true));
+    on('ai_move',   d=>ingest(d,true));
+    on('takeback',  d=>{ if(d.history) proHist=d.history; reviewLive(); ingest(d,false); });
+    on('game_over', d=>{ sEnd(); ingest(d,false); });
+  }catch(e){ /* EventSource unsupported */ }
+
+  // ── Boot ─────────────────────────────────────────────────────────────
+  if(get('pp_coords','1')==='0') document.body.classList.add('no-coords');
+  syncBtns();
+  refreshTraining(); setInterval(refreshTraining, 4000);
+  setTimeout(refreshThreats, 800);
+  console.log('[ChessAI] Pro feature pack loaded.');
+})();
 </script>
 </body></html>
 """
