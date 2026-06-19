@@ -649,6 +649,67 @@ class GameSession:
         self._pos_view_cache = view
         return view
 
+    def tree_snapshot(self, max_depth: int = 3, top_k: int = 3) -> dict:
+        """A nested view of the search tree (root → top-k children → …) for the
+        live tree visualiser. MUST be called from the SEARCH thread between sim
+        batches (ponder is stopped during the AI's own search), where the GIL
+        is held and no other thread mutates the tree — reading the C++ node
+        tree from a different thread mid-search could segfault. SAN labels via
+        python-chess by pushing/popping a scratch board down each branch."""
+        tree, board = self.tree, self.board
+        if tree is None or board is None:
+            return {}
+        root = getattr(tree, "_root_node", None)
+        if root is None:
+            return {}
+        cb = None
+        try:
+            import chess as _c
+            cb = _c.Board(board.to_fen())
+        except Exception:
+            cb = None
+
+        def walk(node, depth):
+            try:
+                kids = list(tree._children(node))
+            except Exception:
+                return []
+            kids.sort(key=lambda mc: getattr(mc[1], "N", 0), reverse=True)
+            out = []
+            for m, c in kids[:top_k]:
+                n_c = int(getattr(c, "N", 0))
+                if n_c <= 0:
+                    continue
+                uci = _move_uci(m)
+                san, pushed = uci, False
+                if cb is not None:
+                    try:
+                        mv = cb.parse_uci(uci)
+                        san = cb.san(mv)
+                        cb.push(mv)
+                        pushed = True
+                    except Exception:
+                        san = uci
+                node_d = {
+                    "san": san, "uci": uci, "n": n_c,
+                    "q": -float(getattr(c, "Q", 0.0)),
+                    "p": float(getattr(c, "P", 0.0)),
+                    "kids": walk(c, depth + 1) if depth + 1 < max_depth else [],
+                }
+                if pushed:
+                    cb.pop()
+                out.append(node_d)
+            return out
+
+        try:
+            return {
+                "n": int(getattr(root, "N", 0)),
+                "q": float(_safe(lambda: self.tree.root_value(), 0.0) or 0.0),
+                "kids": walk(root, 0),
+            }
+        except Exception:
+            return {}
+
     def _emit_progress(self, sims_done: int, sims_target: Optional[int],
                        time_elapsed_s: Optional[float] = None,
                        time_budget_s: Optional[float] = None) -> None:
@@ -664,6 +725,14 @@ class GameSession:
             "analysis":      _analysis_for_wire(a),
             "position":      self._position_view(),
         })
+        # Live search-tree snapshot (throttled). Built HERE, in the search
+        # thread between batches, so reading the C++ node tree is race-free.
+        now = time.time()
+        if now - getattr(self, "_last_tree_emit", 0.0) > 0.35:
+            self._last_tree_emit = now
+            snap = self.tree_snapshot()
+            if snap:
+                self.emit("tree", snap)
 
     def _budget_label(self) -> str:
         if self.think_mode == "sims":
@@ -1508,6 +1577,23 @@ PAGE = r"""<!doctype html>
   /* Coordinates toggle (chessboard.js notation) */
   body.no-coords .notation-322f9{display:none !important}
   .moverow.reviewing{outline:1px solid var(--accent);border-radius:4px}
+
+  /* Search-tree visualiser */
+  #treeWrap{overflow:auto;max-height:440px;border-radius:8px;background:#0b0e12;
+            border:1px solid var(--border)}
+  #treeSvg{width:100%;display:block}
+  #treeSvg .tnode rect{transition:all .25s ease}
+  #treeSvg text{pointer-events:none}
+  .tree-meta{font-size:11px;color:var(--ink-fade);margin-top:6px;display:flex;
+             justify-content:space-between}
+  /* Guess-the-move scoreboard */
+  .gs-row{display:flex;gap:8px;text-align:center}
+  .gs-row .cell{flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);
+                background:var(--bg-2)}
+  .gs-row .cell .big{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+  .gs-row .cell .lbl{font-size:10px;color:var(--ink-fade);text-transform:uppercase;letter-spacing:.1em}
+  #guessNow{margin-top:8px;font-size:12px;color:var(--ink-dim);min-height:18px}
+  .gsq{box-shadow:inset 0 0 0 4px rgba(255,180,84,.8) !important}
 </style>
 </head><body>
 
@@ -2400,6 +2486,7 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
       '<button class="tbtn" data-a="cfen" title="Copy FEN">FEN</button>'+
       '<button class="tbtn" data-a="cpgn" title="Copy PGN">⧉ PGN</button>'+
       '<button class="tbtn" data-a="loadfen" title="Play from a FEN">Load FEN</button>'+
+      '<button class="tbtn" data-a="guess" title="Guess-the-AI-move game">🎯 Guess</button>'+
       '<button class="tbtn" data-a="help" title="Keyboard shortcuts (?)">?</button>'+
       '<span class="opening-chip" id="openingChip">—</span>'+
     '</div>';
@@ -2422,6 +2509,27 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
       'Click a move below, or use ← / → to step through the game.</div>';
   const rightCol = document.querySelector('.right');
   if (rightCol){ rightCol.appendChild(tmCard); rightCol.appendChild(accCard); }
+
+  // ── Search-tree visualiser (left column, wide) ───────────────────────
+  const treeCard = elc('div','card');
+  treeCard.innerHTML = '<h3>🌳 Search tree — watch me think</h3>'+
+    '<div id="treeWrap"><svg id="treeSvg" viewBox="0 0 400 80"></svg></div>'+
+    '<div class="tree-meta"><span id="treeRootEval">root —</span>'+
+    '<span>green = good for the side that just moved · thickness = visits</span></div>';
+  if (leftCol) leftCol.appendChild(treeCard);
+
+  // ── Guess-the-move scoreboard (right column) ─────────────────────────
+  const guessCard = elc('div','card');
+  guessCard.innerHTML = '<h3>🎯 Guess the AI’s move</h3>'+
+    '<div class="gs-row">'+
+      '<div class="cell"><div class="big" id="gsScore">0</div><div class="lbl">Score</div></div>'+
+      '<div class="cell"><div class="big" id="gsStreak">0</div><div class="lbl">Streak</div></div>'+
+      '<div class="cell"><div class="big" id="gsBest">0</div><div class="lbl">Best</div></div>'+
+      '<div class="cell"><div class="big" id="gsAcc">—</div><div class="lbl">Hit %</div></div>'+
+    '</div>'+
+    '<div id="guessNow">Turn on <b>🎯 Guess</b>, then after your move click '+
+    'two squares to predict my reply. Exact = +3, top-3 = +1.</div>';
+  if (rightCol) rightCol.appendChild(guessCard);
 
   // ── Fixed chrome: review bar + help overlay ──────────────────────────
   const rbar = elc('div'); rbar.id='reviewbar';
@@ -2666,6 +2774,7 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
       const a=b.dataset.a;
       if(a==='sound'){ b.classList.toggle('on',soundOn); b.textContent=soundOn?'🔊':'🔇'; }
       if(a==='threats') b.classList.toggle('on',threatsOn);
+      if(a==='guess') b.classList.toggle('on',guessMode);
       if(a==='focus') b.classList.toggle('on',document.body.classList.contains('focusmode'));
     });
   }
@@ -2681,6 +2790,7 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
     else if(a==='cfen'){ try{ copy(game.fen()); }catch(_){ } }
     else if(a==='cpgn') copy(pgnHeaders()+curPGN());
     else if(a==='loadfen') loadFen();
+    else if(a==='guess') toggleGuess();
     else if(a==='help') help.classList.add('show');
   });
   rbar.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return;
@@ -2714,6 +2824,124 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
     else if(k==='r'||k==='R'){ if(typeof resign==='function') resign(); }
   });
 
+  // ── Search-tree visualiser ───────────────────────────────────────────
+  const esc = (window.escapeHtml) ? window.escapeHtml : (s=>String(s));
+  function renderTree(t){
+    const svg=$('treeSvg'); if(!svg) return;
+    const meta=$('treeRootEval');
+    if(!t || !t.kids || !t.kids.length){
+      svg.setAttribute('viewBox','0 0 400 60');
+      svg.innerHTML='<text x="12" y="30" fill="#7a8590" font-size="12">'+
+        'The tree grows here while the AI is thinking…</text>';
+      if(meta) meta.textContent='root —';
+      return;
+    }
+    let leaf=0; const nodes=[], edges=[];
+    const rootN=t.n||1;
+    const root={san:'start',uci:'',n:t.n,q:t.q,p:1,kids:t.kids,_root:true};
+    (function layout(node,depth,parent){
+      node._d=depth;
+      if(!node.kids||!node.kids.length){ node._y=leaf++; }
+      else { node.kids.forEach(k=>layout(k,depth+1,node));
+             node._y=(node.kids[0]._y + node.kids[node.kids.length-1]._y)/2; }
+      nodes.push(node); if(parent) edges.push([parent,node]);
+    })(root,0,null);
+    const maxD=Math.max(1,...nodes.map(n=>n._d)), leaves=Math.max(1,leaf);
+    const colW=128, rowH=30, padX=12, padY=14, NW=78;
+    const W=padX*2+maxD*colW+NW, H=padY*2+leaves*rowH;
+    svg.setAttribute('viewBox','0 0 '+W+' '+H);
+    svg.style.height=Math.min(440,H+8)+'px';
+    const X=n=>padX+n._d*colW, Y=n=>padY+n._y*rowH+rowH/2;
+    let s='';
+    for(const [a,b] of edges){
+      const w=Math.max(0.6,Math.min(7,(b.n||0)/rootN*9));
+      const x1=X(a)+NW, y1=Y(a), x2=X(b), y2=Y(b);
+      s+='<path d="M'+x1+','+y1+' C'+(x1+colW*0.4)+','+y1+' '+(x2-colW*0.4)+','+y2+' '+x2+','+y2+
+         '" fill="none" stroke="rgba(120,140,160,.4)" stroke-width="'+w.toFixed(1)+'"/>';
+    }
+    for(const n of nodes){
+      const q=n.q||0;
+      const col=n._root?'#5aa9ff':(q>0.15?'#3ddc97':(q<-0.15?'#ff6f6f':'#9bd1ff'));
+      const x=X(n), y=Y(n);
+      const share=Math.round((n.n||0)/rootN*100);
+      s+='<g class="tnode">';
+      s+='<rect x="'+x+'" y="'+(y-10)+'" rx="6" width="'+NW+'" height="20" '+
+         'fill="rgba(18,23,28,.95)" stroke="'+col+'" stroke-width="1.3"/>';
+      s+='<text x="'+(x+6)+'" y="'+(y+4)+'" font-size="11" fill="#e6edf3" '+
+         'font-family="Consolas,monospace">'+esc(n.san)+'</text>';
+      s+='<text x="'+(x+NW-4)+'" y="'+(y+4)+'" font-size="9" fill="#7a8590" '+
+         'text-anchor="end">'+(n._root?'':share+'%')+'</text>';
+      s+='<title>'+esc(n.san)+'   N='+n.n+'   Q='+(q>=0?'+':'')+q.toFixed(2)+
+         '   prior='+Math.round((n.p||0)*100)+'%</title></g>';
+    }
+    svg.innerHTML=s;
+    if(meta){ const rq=t.q||0; meta.textContent='root eval '+(rq>=0?'+':'')+rq.toFixed(2)+
+              ' · '+(t.n||0).toLocaleString()+' sims'; }
+  }
+
+  // ── Guess-the-move game ──────────────────────────────────────────────
+  let guessMode = get('pp_guess','0')==='1';
+  let awaitingGuess=false, guessFrom=null, guessUci=null;
+  let gScore=+get('pp_gscore','0'), gStreak=0, gBest=+get('pp_gbest','0'),
+      gTries=+get('pp_gtries','0'), gHits=+get('pp_ghits','0');
+  function clearGuessSq(){ document.querySelectorAll('.gsq').forEach(e=>e.classList.remove('gsq')); }
+  function markSq(sq){ const c=document.querySelector('#board [data-square="'+sq+'"]');
+    if(c) c.classList.add('gsq'); }
+  function renderGuessCard(){
+    $('gsScore').textContent=gScore; $('gsStreak').textContent=gStreak;
+    $('gsBest').textContent=gBest;
+    $('gsAcc').textContent = gTries? Math.round(100*gHits/gTries)+'%' : '—';
+  }
+  function setGuessNow(msg){ const e=$('guessNow'); if(e) e.innerHTML=msg; }
+  function openGuessWindow(){ if(!guessMode) return;
+    awaitingGuess=true; guessFrom=null; guessUci=null; clearGuessSq();
+    setGuessNow('🎯 <b>Predict my move</b> — click the FROM then the TO square.'); }
+  function evalGuess(actualUci, top){
+    if(!guessMode){ return; }
+    if(!guessUci){ awaitingGuess=false; return; }
+    gTries++; const top3=(top||[]).slice(0,3).map(m=>m.uci);
+    let pts=0,msg='';
+    if(guessUci===actualUci){ pts=3; gStreak++; gHits++;
+      msg='🎯 <b>Spot on!</b> +3 — streak '+gStreak; burstConfetti(20); sChk(); }
+    else if(top3.includes(guessUci)){ pts=1; gHits++; gStreak=0;
+      msg='Close — that was in my top 3! +1 (I played <b>'+actualUci+'</b>)'; }
+    else { gStreak=0; msg='Missed — I played <b>'+actualUci+'</b> (you said '+guessUci+')'; }
+    gScore+=pts; gBest=Math.max(gBest,gStreak);
+    LS.setItem('pp_gscore',gScore); LS.setItem('pp_gbest',gBest);
+    LS.setItem('pp_gtries',gTries); LS.setItem('pp_ghits',gHits);
+    setGuessNow(msg); renderGuessCard(); guessUci=null; awaitingGuess=false;
+    setTimeout(clearGuessSq,1200);
+  }
+  function toggleGuess(){ guessMode=!guessMode; LS.setItem('pp_guess',guessMode?'1':'0');
+    syncBtns(); if(guessMode) setGuessNow('Guess mode ON — make your move, then predict mine.');
+    else { awaitingGuess=false; clearGuessSq(); setGuessNow('Guess mode off.'); } }
+  // Capture two board clicks as a from→to prediction.
+  const _boardEl=$('board');
+  if(_boardEl) _boardEl.addEventListener('click',e=>{
+    if(!guessMode||!awaitingGuess) return;
+    const cell=e.target.closest('[data-square]'); if(!cell) return;
+    const sq=cell.getAttribute('data-square');
+    if(!guessFrom){ guessFrom=sq; clearGuessSq(); markSq(sq);
+      setGuessNow('From <b>'+sq+'</b> → now click the target square.'); }
+    else { guessUci=guessFrom+sq; markSq(sq);
+      setGuessNow('Locked in: <b>'+guessUci+'</b> — waiting for my move…'); guessFrom=null; }
+  });
+
+  // ── Confetti (Web Animations, no assets) ─────────────────────────────
+  function burstConfetti(n){ n=n||40;
+    const cols=['#5aa9ff','#3ddc97','#ffb454','#ff6f6f','#9bd1ff','#7ee0d2'];
+    for(let i=0;i<n;i++){ const d=elc('div');
+      d.style.cssText='position:fixed;z-index:80;width:9px;height:9px;border-radius:2px;'+
+        'pointer-events:none;top:42%;left:'+(50+(Math.random()*36-18))+'%;background:'+cols[i%cols.length];
+      document.body.appendChild(d);
+      const dx=(Math.random()*2-1)*260, rot=Math.random()*900;
+      d.animate([{transform:'translate(0,0) rotate(0)',opacity:1},
+                 {transform:'translate('+dx+'px,'+(360+Math.random()*220)+'px) rotate('+rot+'deg)',opacity:0}],
+                {duration:1200+Math.random()*800,easing:'cubic-bezier(.2,.7,.3,1)'});
+      setTimeout(()=>d.remove(),2100);
+    }
+  }
+
   // ── Own SSE stream (additive; server supports many clients) ──────────
   function pieceCount(fen){ return (fen.split(' ')[0].match(/[a-zA-Z]/g)||[]).length; }
   function reactMove(newFen){
@@ -2746,14 +2974,21 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
     on('ai_move',   d=>ingest(d,true));
     on('takeback',  d=>{ if(d.history) proHist=d.history; reviewLive(); ingest(d,false); });
     on('game_over', d=>{ sEnd(); ingest(d,false); });
+    // ── Big-feature wiring: live tree, guess game, win confetti ──────────
+    on('tree',      d=>renderTree(d));
+    on('user_move', d=>openGuessWindow());
+    on('ai_move',   d=>evalGuess(d.uci, (d.analysis && d.analysis.top) || []));
+    on('user_move', d=>{ if(d.game_over && d.result && !/draw|stalemate/i.test(d.result)) burstConfetti(70); });
   }catch(e){ /* EventSource unsupported */ }
 
   // ── Boot ─────────────────────────────────────────────────────────────
   if(get('pp_coords','1')==='0') document.body.classList.add('no-coords');
   syncBtns();
+  renderGuessCard();
+  renderTree(null);
   refreshTraining(); setInterval(refreshTraining, 4000);
   setTimeout(refreshThreats, 800);
-  console.log('[ChessAI] Pro feature pack loaded.');
+  console.log('[ChessAI] Pro feature pack + big expansions loaded.');
 })();
 </script>
 </body></html>
