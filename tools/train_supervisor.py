@@ -41,6 +41,17 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+# main.py reconfigures its OWN stdout to UTF-8 and prints non-ASCII (e.g. the
+# "capacity changed (X -> Y)" arrow U+2192). This supervisor tees that output
+# to its own stdout; under a redirected/.bat stream that defaults to cp1252,
+# writing the arrow raised UnicodeEncodeError and killed the supervisor on the
+# first relayed line. Force UTF-8 (errors='replace') so the tee never crashes.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CKPT_DIR = _ROOT / "checkpoints"
