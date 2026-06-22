@@ -278,14 +278,18 @@ class ChessAIConfig:
     opening_book_path: str = ""
 
     # ── Teacher / Self-distillation ──────────────────────────────────────
-    teacher_game_ratio: float = 0.05   # Fraction of games run at teacher sims.
-                                       # 0.10→0.05: the teacher buffer fills to
-                                       # its 200k cap quickly and then teacher
-                                       # games only refresh a full buffer; at
-                                       # the old ratio they were ~10% of games
-                                       # but a larger share of wall-time (tiny
-                                       # width-16 pool). Halved during bootstrap
-                                       # — restore later for endgame polish.
+    teacher_game_ratio: float = 0.0    # 0.05→0.0: the teacher BUFFER is now a
+                                       # curated Stockfish/puzzle distillation
+                                       # set (seeded by tools/seed_teacher.py),
+                                       # and the teacher-KL term (30% of every
+                                       # batch) pulls the policy toward those
+                                       # 2000-2500-Elo moves. Self-play teacher
+                                       # games would slowly overwrite that ring
+                                       # with the net's OWN ~1000-Elo play and
+                                       # re-dilute the channel — so we stop
+                                       # generating them. Re-seed with stronger
+                                       # Stockfish (or raise this) once the net
+                                       # approaches the seeded teacher's level.
     teacher_batch_ratio: float = 0.30  # Fraction of training batch from teacher buf
     teacher_loss_weight: float = 1.0   # Scale of the teacher KL term in total loss
 

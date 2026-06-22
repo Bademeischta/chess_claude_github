@@ -169,13 +169,20 @@ class SelfPlayWorker:
         self.model.eval()
         t_batch = time.time()
 
-        # Determine teacher/standard split based on global game counter
-        teacher_every = max(1, int(1.0 / self.cfg.teacher_game_ratio))
-        game_base = self.games_generated
-        n_teacher = sum(
-            1 for i in range(n_games)
-            if (game_base + i) % teacher_every == 0
-        )
+        # Determine teacher/standard split based on global game counter.
+        # ratio <= 0 disables self-play teacher games entirely — used when the
+        # teacher buffer is a curated Stockfish/puzzle distillation set
+        # (tools/seed_teacher.py) that self-play must not overwrite.
+        ratio = float(self.cfg.teacher_game_ratio)
+        if ratio <= 0.0:
+            n_teacher = 0
+        else:
+            teacher_every = max(1, int(1.0 / ratio))
+            game_base = self.games_generated
+            n_teacher = sum(
+                1 for i in range(n_games)
+                if (game_base + i) % teacher_every == 0
+            )
         n_standard = n_games - n_teacher
 
         parts = []
