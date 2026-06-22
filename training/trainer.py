@@ -917,10 +917,17 @@ class Trainer:
         current_model: nn.Module,
         opponent_model: nn.Module,
         n_games: int = 200,
+        progress=None,
+        max_moves: int = 300,
     ) -> tuple[int, int, int]:
         """
         Play n_games between current_model and opponent_model.
         Returns (wins, draws, losses) for current_model.
+
+        `progress`, if given, is called as progress(done, n_games, w, d, l)
+        after every game (used by tools/run_arena.py for a live tally).
+        `max_moves` caps each game's length (a too-low cap turns slow
+        conversions into draws; the in-training default of 300 is unchanged).
         """
         from mcts.tree import MCTSTree
         from engine.rules import get_game_result, GameResult
@@ -973,7 +980,7 @@ class Trainer:
                 board = new_board
                 move_count += 1
                 r = get_game_result(board)
-                if r != GameResult.ONGOING or move_count >= 300:
+                if r != GameResult.ONGOING or move_count >= max_moves:
                     result = r
                     break
 
@@ -985,6 +992,12 @@ class Trainer:
                 else: wins += 1
             else:
                 draws += 1
+
+            if progress is not None:
+                try:
+                    progress(wins + draws + losses, n_games, wins, draws, losses)
+                except Exception:
+                    pass
 
         return wins, draws, losses
 

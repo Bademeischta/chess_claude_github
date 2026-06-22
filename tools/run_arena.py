@@ -74,16 +74,20 @@ def main() -> int:
                     help="checkpoint to evaluate (default: latest in checkpoints/)")
     ap.add_argument("--opponent", default=None,
                     help="opponent checkpoint (default: best pool member)")
-    ap.add_argument("--games", type=int, default=60,
-                    help="number of arena games (default 60; trainer uses 100)")
-    ap.add_argument("--sims", type=int, default=None,
-                    help="MCTS sims per move (default: config mcts_sims)")
+    ap.add_argument("--games", type=int, default=40,
+                    help="number of arena games (default 40; trainer uses 100)")
+    ap.add_argument("--sims", type=int, default=64,
+                    help="MCTS sims per move (default 64 = fast diagnostic; "
+                         "raise toward 128 for a closer-to-training comparison)")
+    ap.add_argument("--max-moves", type=int, default=200,
+                    help="per-game move cap (default 200). Arena has no resign, "
+                         "so weak conversions otherwise drag games to 300 moves "
+                         "and the run takes hours; unconverted wins count as draws.")
     args = ap.parse_args()
 
     update_config_from_dict(run_probe(write=False))
     device = torch.device(CONFIG.device)
-    if args.sims is not None:
-        CONFIG.mcts_sims = args.sims
+    CONFIG.mcts_sims = int(args.sims)
 
     # ── Resolve checkpoints ──────────────────────────────────────────────
     current_path = args.current or latest_checkpoint(CONFIG.checkpoint_dir)
@@ -119,10 +123,18 @@ def main() -> int:
     print(f"[arena] current : {current_path}")
     print(f"[arena] opponent: {opp_path}")
     print(f"[arena] {args.games} games @ {CONFIG.mcts_sims} sims/move, "
+          f"cap {args.max_moves} moves, "
           f"openings={getattr(CONFIG, 'arena_opening_plies', 8)} plies, greedy")
-    print("[arena] playing... (this can take several minutes)")
 
-    wins, draws, losses = trainer.run_arena(current, opponent, args.games)
+    def _progress(done, total, w, d, l):
+        print(f"\r[arena] {done}/{total} games  W{w}/D{d}/L{l}",
+              end="", flush=True)
+
+    print("[arena] playing...")
+    wins, draws, losses = trainer.run_arena(
+        current, opponent, args.games,
+        progress=_progress, max_moves=args.max_moves)
+    print()  # newline after the live tally
 
     n = wins + draws + losses
     draw_rate = draws / n if n else 0.0
