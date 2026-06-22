@@ -186,7 +186,14 @@ class ChessAIConfig:
     # (probing lives in Python) and on any driver error (fail-open to the
     # legacy loop).
     cpp_round_driver: bool = True
-    cpp_round_threads: int = 0     # 0 = auto (min(8, cores/2))
+    cpp_round_threads: int = 1     # was 0 (auto≈4). The C++ RoundDriver.select
+                                   # parallel_for was the crash site of the
+                                   # recurring access violation (tree.py:1153)
+                                   # — serialising it (1 thread) dodges a likely
+                                   # race while keeping the driver + history-GPU
+                                   # cache. GPU forward is the bottleneck, so the
+                                   # CPU-selection throughput cost is small. If
+                                   # crashes persist, set cpp_round_driver=False.
 
     # ── Self-play ────────────────────────────────────────────────────────
     parallel_games: int = 6  # hw-derived
