@@ -27,7 +27,10 @@ classifiers = [
 dependencies = [
     "numpy>=2.0",
     "psutil>=5.9",
-    "python-chess>=1.11",
+    # Modern python-chess ships under the PyPI name "chess" — the legacy
+    # "python-chess" name stops at 1.1.0 (audit 2026-07-02 S11; the old
+    # entry made `pip install .` pull an ancient incompatible package).
+    "chess>=1.11",
 ]
 
 [project.optional-dependencies]
