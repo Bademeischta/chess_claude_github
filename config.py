@@ -360,6 +360,23 @@ class ChessAIConfig:
     # game scheduler; removed in the audit-fix pass (P4-5) rather than
     # shipping a config option that does nothing.
 
+    # ── Objective Stockfish-anchor Elo probe (audit 2026-07-15) ──────────
+    # The pool Elo above is self-referential and can drift without the net
+    # getting stronger against the outside world. Every N training steps
+    # main.py plays a short greedy noise-free match against Stockfish at a
+    # FIXED skill anchor and logs `elo/stockfish` to TensorBoard plus a row
+    # in checkpoints/sf_elo_history.csv. Cost: ~2-5 min per probe with the
+    # defaults — ~2-4% of wall time at 5k-step cadence. 0 disables.
+    sf_elo_every_n_steps: int = 5_000
+    sf_elo_games: int = 30
+    # Skill 1 ≈ 950 Elo. Chosen from measurement (2026-07-15: the step-110k
+    # net LOST a quick probe vs skill 1 at 32 sims). Raise the anchor as
+    # the net grows past ~65% score — a mismatched anchor (all wins / all
+    # losses) yields only a ±400 bound, not an estimate; the console
+    # output says so when it happens.
+    sf_elo_skill: int = 1
+    sf_elo_sims: int = 0          # our sims/move for the probe; 0 = mcts_sims
+
     # ── Entropy-Regulated Exploration Decay ──────────────────────────────
     entropy_target: float = 2.5    # Target policy entropy in nats
     entropy_check_every: int = 500   # was 5000 — at that cadence ERED fired

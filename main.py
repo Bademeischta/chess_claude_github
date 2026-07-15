@@ -465,6 +465,62 @@ def _run_arena_and_update(trainer, model, pool, logger) -> None:
           f"new_ELO={new_elo:.0f}")
 
 
+def _run_sf_anchor_and_log(trainer, model, logger) -> None:
+    """Objective strength probe: short match vs a fixed Stockfish anchor,
+    logged as `elo/stockfish` in TensorBoard + a CSV row. The pool Elo is
+    self-referential and can drift; this is the external yardstick the
+    audits kept asking for (2026-07-02 Phase 5). Failures only skip the
+    probe — measurement must never kill training."""
+    from utils.sf_anchor import play_anchor_match
+    try:
+        res = play_anchor_match(
+            model, trainer.device, CONFIG,
+            games=int(CONFIG.sf_elo_games),
+            sf_skill=int(CONFIG.sf_elo_skill),
+            sims=int(getattr(CONFIG, "sf_elo_sims", 0)),
+            batched_bs=32,
+        )
+    except Exception as e:  # noqa: BLE001 — probe must never kill training
+        print(f"[SF-Elo] probe failed ({type(e).__name__}: {e}) — skipped.")
+        return
+    if res is None:
+        print("[SF-Elo] no Stockfish binary — probe skipped "
+              "(python tools/install_stockfish.py)")
+        return
+    step = trainer.global_step
+    logger.log_scalar("elo/stockfish", float(res["estimated_elo"]), step)
+    logger.log_scalar("elo/stockfish_score",
+                      (res["wins"] + 0.5 * res["draws"]) / max(1, res["games"]),
+                      step)
+    csv_path = Path(CONFIG.checkpoint_dir) / "sf_elo_history.csv"
+    try:
+        new_file = not csv_path.exists()
+        with open(csv_path, "a", encoding="utf-8") as fh:
+            if new_file:
+                fh.write("step,games,wins,draws,losses,anchor_elo,"
+                         "estimated_elo,ci_lo,ci_hi,seconds\n")
+            fh.write(f"{step},{res['games']},{res['wins']},{res['draws']},"
+                     f"{res['losses']},{res['anchor_elo']},"
+                     f"{res['estimated_elo']:.0f},{res['est_lo']:.0f},"
+                     f"{res['est_hi']:.0f},{res['seconds']:.0f}\n")
+    except OSError as e:
+        print(f"[SF-Elo] CSV write skipped: {e}")
+    score = (res["wins"] + 0.5 * res["draws"]) / max(1, res["games"])
+    print(f"[SF-Elo] Step {step}: {res['anchor_label']}  "
+          f"W{res['wins']}/D{res['draws']}/L{res['losses']}  "
+          f"est. Elo {res['estimated_elo']:.0f} "
+          f"(CI {res['est_lo']:.0f}..{res['est_hi']:.0f}, "
+          f"{res['seconds']:.0f}s)", flush=True)
+    if score >= 0.9:
+        print(f"[SF-Elo] score {score:.0%} — anchor too weak for a real "
+              f"estimate; raise CONFIG.sf_elo_skill (now "
+              f"{CONFIG.sf_elo_skill}).")
+    elif score <= 0.1:
+        print(f"[SF-Elo] score {score:.0%} — anchor too strong for a real "
+              f"estimate; lower CONFIG.sf_elo_skill (now "
+              f"{CONFIG.sf_elo_skill}).")
+
+
 def _train_steps_for(n_new: int, cfg, floor: int) -> int:
     """
     Number of gradient steps to run after a self-play batch.
@@ -603,6 +659,7 @@ def phase_sf_distill(
         return
 
     steps_per_epoch = max(1, n // CONFIG.batch_size)
+    gates: dict = {"sf_elo": trainer.global_step}
     for epoch in range(epochs):
         print(f"[Phase SF] Epoch {epoch+1}/{epochs} "
               f"({steps_per_epoch} steps)")
@@ -610,6 +667,12 @@ def phase_sf_distill(
             metrics = trainer.train_step()
             if metrics and step % 500 == 0:
                 logger.log(metrics, trainer.global_step)
+            # Objective SF-anchor curve DURING distillation too — this is
+            # the phase where most strength is expected to arrive, so it
+            # is exactly where the external yardstick matters.
+            if _interval_crossed(gates, "sf_elo", trainer.global_step,
+                                 CONFIG.sf_elo_every_n_steps):
+                _run_sf_anchor_and_log(trainer, model, logger)
     # Force-save before phase ends — sf_distill typically runs fewer
     # steps than checkpoint_every (200), so without this the SF gains
     # would be discarded on the next launch.
@@ -648,6 +711,7 @@ def phase_puzzles(
         return
 
     steps_per_epoch = max(1, n // CONFIG.batch_size)
+    gates: dict = {"sf_elo": trainer.global_step}
     for epoch in range(epochs):
         print(f"[Phase Puzzles] Epoch {epoch+1}/{epochs} "
               f"({steps_per_epoch} steps)")
@@ -655,6 +719,9 @@ def phase_puzzles(
             metrics = trainer.train_step()
             if metrics and step % 500 == 0:
                 logger.log(metrics, trainer.global_step)
+            if _interval_crossed(gates, "sf_elo", trainer.global_step,
+                                 CONFIG.sf_elo_every_n_steps):
+                _run_sf_anchor_and_log(trainer, model, logger)
     # Force-save before phase ends — same reason as phase_sf_distill.
     try:
         path = trainer.emergency_save()
@@ -693,7 +760,9 @@ def phase_selfplay(
 
     games = 0
     t0 = time.time()
-    gates: dict = {"arena": trainer.global_step, "register": trainer.global_step}
+    gates: dict = {"arena": trainer.global_step,
+                   "register": trainer.global_step,
+                   "sf_elo": trainer.global_step}
 
     while games < max_games:
         _t_iter = time.time()
@@ -741,6 +810,12 @@ def phase_selfplay(
                              CONFIG.arena_every_n_steps) and pool._pool:
             _run_arena_and_update(trainer, model, pool, logger)
 
+        # Objective SF-anchor Elo probe (external yardstick — the pool Elo
+        # above is self-referential; audit 2026-07-02 Phase 5).
+        if _interval_crossed(gates, "sf_elo", trainer.global_step,
+                             CONFIG.sf_elo_every_n_steps):
+            _run_sf_anchor_and_log(trainer, model, logger)
+
         # Register checkpoint in pool
         if _interval_crossed(gates, "register", trainer.global_step,
                              CONFIG.arena_every_n_steps // 2):
@@ -774,7 +849,8 @@ def phase_distillation(
 
     games = 0
     batch_num = 0
-    gates: dict = {"arena": trainer.global_step}
+    gates: dict = {"arena": trainer.global_step,
+                   "sf_elo": trainer.global_step}
     _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
         _t_iter = time.time()
@@ -794,6 +870,10 @@ def phase_distillation(
         if _interval_crossed(gates, "arena", trainer.global_step,
                              CONFIG.arena_every_n_steps) and pool._pool:
             _run_arena_and_update(trainer, model, pool, logger)
+
+        if _interval_crossed(gates, "sf_elo", trainer.global_step,
+                             CONFIG.sf_elo_every_n_steps):
+            _run_sf_anchor_and_log(trainer, model, logger)
 
         if _governor is not None:
             _governor.maybe_throttle(time.time() - _t_iter)
@@ -830,7 +910,8 @@ def phase_refinement(
 
     games = 0
     batch_num = 0
-    gates: dict = {"arena": trainer.global_step}
+    gates: dict = {"arena": trainer.global_step,
+                   "sf_elo": trainer.global_step}
     _emerg_n = getattr(CONFIG, "emergency_checkpoint_every_batches", 3)
     while games < max_games:
         _t_iter = time.time()
@@ -850,6 +931,10 @@ def phase_refinement(
         if _interval_crossed(gates, "arena", trainer.global_step,
                              CONFIG.arena_every_n_steps) and pool._pool:
             _run_arena_and_update(trainer, model, pool, logger)
+
+        if _interval_crossed(gates, "sf_elo", trainer.global_step,
+                             CONFIG.sf_elo_every_n_steps):
+            _run_sf_anchor_and_log(trainer, model, logger)
 
         if _governor is not None:
             _governor.maybe_throttle(time.time() - _t_iter)
