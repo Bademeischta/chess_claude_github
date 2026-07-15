@@ -324,7 +324,8 @@ oder mehr aus der Hardware holen will, hat diese Hebel:
 | `mcts_sims_critical` / `mcts_sims_teacher` | 256 / 256 | DCA-Boost bzw. Teacher-Spiele. |
 | `grad_ckpt_from` | `None` (auto) | Bei ≤14 Blöcken automatisch aus — passt für 12 GB. Bei sehr engem VRAM Wert manuell setzen (z. B. 4). |
 | `precision` | `bf16` (hw-derived) | Blackwell hat nativen BF16-Tensor-Core und braucht keinen Loss-Scaler. FP16 nur, wenn BF16-Support fehlt. |
-| `inference_backend` | `torch` | `onnx` ist verfügbar und nach `python tools/verify_onnx.py` (Parität) sowie `python tools/bench_infer.py` (Throughput) optional umstellbar. |
+| `inference_backend` | `cudagraph` | CUDA-Graph-Capture des Inferenz-Forwards (~1.3-2× schneller als eager, automatischer Fallback). `torch` = eager; `onnx` nach `python tools/verify_onnx.py` + `bench_infer.py` optional. |
+| `teacher_loss_weight` | 1.0 → 0.3 | Wird zwischen `teacher_weight_anneal_start/end` linear abgesenkt (statisches Teacher-Set würde sonst memorisiert). `loss/teacher_kl` in TensorBoard beobachten. |
 
 ### Quick Benchmark
 

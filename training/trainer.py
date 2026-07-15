@@ -25,11 +25,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import autocast, GradScaler
-from torch.utils.data import DataLoader, ConcatDataset
 
 from config import ChessAIConfig
 from training.replay_buffer import (
-    PrioritizedReplayBuffer, TeacherBuffer, PositionRecord, ReplayDataset,
+    PrioritizedReplayBuffer, TeacherBuffer, PositionRecord,
 )
 from training.pbt import OpponentPool
 from utils.logger import TrainingLogger
@@ -139,7 +138,16 @@ class Trainer:
         # sync that was already paid per step for metrics — see train_step.)
         # PER priority update can run with one-step latency without harm —
         # defer the device→host copy so it overlaps the next forward.
+        # The tuple carries a CUDA event recorded after the async copy;
+        # the consumer synchronises on it before reading. Previously the
+        # read was only race-free by accident: a dead per-step entropy
+        # computation happened to force a stream sync after the copy
+        # (audit 2026-07-02 S4).
         self._deferred_td_update: tuple | None = None
+        # Background buffer-dump thread (audit S15: the synchronous
+        # pickle+gzip of the ~GB replay buffer stalled training 30-90 s
+        # every checkpoint). At most one dump in flight.
+        self._buffer_dump_thread = None
         # Anchor tensor for the piece-value L2 pull (kept on device, allocated
         # once instead of every train_step).
         self._piece_value_anchor = torch.tensor(
@@ -209,10 +217,14 @@ class Trainer:
             return {}
 
         # ── Apply deferred PER priority update from the previous step ─
-        # The TD-errors from train_step(t-1) were copied async; their D2H
-        # is finished by now (a full forward+backward+step happened since).
+        # The TD-errors from train_step(t-1) were copied async; wait on the
+        # recorded event before reading the pinned tensor. (Without the
+        # event this was a genuine host-side data race — nothing between
+        # the copy enqueue and this read is guaranteed to synchronise.)
         if self._deferred_td_update is not None:
-            prev_idx, prev_td = self._deferred_td_update
+            prev_idx, prev_td, prev_ev = self._deferred_td_update
+            if prev_ev is not None:
+                prev_ev.synchronize()
             self.replay_buffer.update_priorities(prev_idx, prev_td.numpy())
             self._deferred_td_update = None
 
@@ -268,8 +280,8 @@ class Trainer:
             hist_t_t  = to_device(hist_t,   self._amp_dtype)
             pol_t_t   = to_device(pol_t)
             wdl_t_t   = to_device(wdl_t)
-            ph_t_t    = to_device(ph_t, torch.long)
-            mn_t_t    = to_device(mn_t, torch.long)
+            # (phase / move-number of teacher records are not consumed by any
+            # loss term — their transfers were removed as pure waste.)
 
         # ── Forward pass ─────────────────────────────────────────────
         self.model.train()
@@ -351,13 +363,36 @@ class Trainer:
             pv_anchor_loss = F.mse_loss(pv.float(), self._piece_value_anchor)
             loss = loss + anchor_w * pv_anchor_loss
 
-        # Teacher loss: KL divergence against teacher policy (soft targets)
-        teacher_loss = torch.zeros(1, device=self.device)
+        # ── Teacher loss: policy KL + WDL cross-entropy ───────────────
+        # Policy: KL divergence against the teacher policy (soft/one-hot).
+        # Value: the teacher records carry DECISIVE game outcomes (Stockfish
+        # games, puzzle wins) — the cleanest value signal in the system.
+        # Until the 2026-07-02 audit (S3) `wdl_t_t` was transferred and then
+        # thrown away: 30 % of every batch ran the value head for nothing
+        # and the value head never saw the teacher outcomes. The CE mirrors
+        # the replay path's soft 3-class target construction.
+        teacher_loss       = torch.zeros((), device=self.device)
+        teacher_value_loss = torch.zeros((), device=self.device)
         if teacher_records:
             log_probs_t  = F.log_softmax(policy_logits_t.float(), dim=-1)
-            kl_loss      = F.kl_div(log_probs_t, pol_t_t, reduction="batchmean")
-            teacher_loss = kl_loss
-            loss = loss + self.cfg.teacher_loss_weight * teacher_loss
+            teacher_loss = F.kl_div(log_probs_t, pol_t_t, reduction="batchmean")
+
+            wdl_logits_t = wdl_t_pred.float()                      # (Bt, 3)
+            p_win_t  = (2.0 * wdl_t_t - 1.0).clamp(min=0.0)
+            p_loss_t = (1.0 - 2.0 * wdl_t_t).clamp(min=0.0)
+            p_draw_t = (1.0 - p_win_t - p_loss_t).clamp(min=0.0)
+            wdl_target_t = torch.stack([p_win_t, p_draw_t, p_loss_t], dim=1)
+            log_wdl_t = F.log_softmax(wdl_logits_t, dim=-1)
+            teacher_value_loss = -(wdl_target_t * log_wdl_t).sum(dim=-1).mean()
+
+            # Annealed teacher weight (audit S8): a static 150k-position
+            # teacher set at constant weight 1.0 gets replayed ~100x over
+            # 100k steps — the policy starts memorising Stockfish-skill-N
+            # moves and ceilings there. The weight anneals linearly between
+            # the configured steps; the value CE anneals with the same
+            # factor (it shares the staleness problem).
+            w_teacher = self._teacher_weight()
+            loss = loss + w_teacher * (teacher_loss + 0.5 * teacher_value_loss)
 
         # PER td-errors: compute on-GPU now (reuses value_target_r, no recompute),
         # defer the host copy until after optimizer.step so the D2H transfer
@@ -397,13 +432,18 @@ class Trainer:
             self.scheduler.step()
 
         # ── PER priority update ───────────────────────────────────────
-        # Defer the device→host copy by one step. By the time the NEXT
-        # train_step starts (after a forward+backward worth of GPU work),
-        # the pinned-host destination is guaranteed populated — so this
-        # non-blocking copy never adds a sync to the current iteration.
+        # Defer the device→host copy by one step so it overlaps the
+        # backward/step kernels instead of blocking here. The recorded CUDA
+        # event is what the NEXT step synchronises on before reading —
+        # "enough GPU work happened in between" is not a guarantee.
         td_pinned = torch.empty_like(td_err_gpu, device="cpu", pin_memory=True)
         td_pinned.copy_(td_err_gpu, non_blocking=True)
-        self._deferred_td_update = (indices, td_pinned)
+        if self.device.type == "cuda":
+            td_ev = torch.cuda.Event()
+            td_ev.record()
+        else:
+            td_ev = None  # CPU copies are synchronous
+        self._deferred_td_update = (indices, td_pinned, td_ev)
         self.replay_buffer.step()
 
         # ── Entropy-Regulated Exploration Decay ──────────────────────
@@ -425,12 +465,12 @@ class Trainer:
             if self.global_step % (self.cfg.checkpoint_every * save_every) == 0:
                 self._save_buffers()
 
-        # Cheap policy entropy for *logging* every step (the ERED regulation
-        # in _regulate_entropy stays on its 5000-step cadence and is unchanged
-        # — this is display-only so H is never a stale nan).
-        with torch.no_grad():
-            _lp  = F.log_softmax(policy_logits_r.float(), dim=-1)
-            _ent = float((-(_lp.exp() * _lp).sum(-1)).mean().item())
+        # (A per-step entropy computation used to live here. It was dead —
+        # its result was never read, the log-cadence branch below recomputes
+        # entropy — and it cost a full softmax over (B, 4672) plus a stream
+        # sync EVERY step. Its accidental side effect, synchronising the
+        # deferred PER copy, is now handled explicitly by the CUDA event
+        # above. Audit 2026-07-02 S4.)
 
         # ── Metrics ───────────────────────────────────────────────────
         # Scalar .item() calls each force a cudaDeviceSynchronize. Strategy:
@@ -455,17 +495,41 @@ class Trainer:
                 policy_loss_r.mean().detach(),
                 value_loss_r.mean().detach(),
                 teacher_loss.detach().reshape(()),
+                teacher_value_loss.detach().reshape(()),
                 aux_loss.detach(),
                 ent,
             ]).cpu()
             metrics.update({
-                "loss/policy":     float(scalars[0]),
-                "loss/value":      float(scalars[1]),
-                "loss/teacher_kl": float(scalars[2]),
-                "loss/aux":        float(scalars[3]),
-                "policy_entropy":  float(scalars[4]),
+                "loss/policy":        float(scalars[0]),
+                "loss/value":         float(scalars[1]),
+                "loss/teacher_kl":    float(scalars[2]),
+                "loss/teacher_value": float(scalars[3]),
+                "loss/aux":           float(scalars[4]),
+                "policy_entropy":     float(scalars[5]),
+                "teacher_weight":     self._teacher_weight(),
             })
         return metrics
+
+    # ── Teacher-weight annealing ──────────────────────────────────────────
+
+    def _teacher_weight(self) -> float:
+        """Effective teacher-loss weight at the current global step.
+
+        Linear anneal from cfg.teacher_loss_weight down to
+        cfg.teacher_weight_final between teacher_weight_anneal_start and
+        teacher_weight_anneal_end (audit S8: constant 1.0 on a static 150k
+        teacher set drifts into memorisation). Anneal disabled (returns the
+        base weight) when end <= start.
+        """
+        w0 = float(self.cfg.teacher_loss_weight)
+        w1 = float(getattr(self.cfg, "teacher_weight_final", w0))
+        s0 = int(getattr(self.cfg, "teacher_weight_anneal_start", 0))
+        s1 = int(getattr(self.cfg, "teacher_weight_anneal_end", 0))
+        if s1 <= s0:
+            return w0
+        t = (self.global_step - s0) / float(s1 - s0)
+        t = min(1.0, max(0.0, t))
+        return w0 + t * (w1 - w0)
 
     # ── Emergency snapshot (called between batches; crash-resilience) ────
 
@@ -672,17 +736,25 @@ class Trainer:
     def _save_buffers(self) -> None:
         """Dump replay + teacher buffers as gzip-pickle next to the latest
         checkpoint. Overwrites a single sliding pair (no per-step copies) to
-        keep disk usage bounded. Errors are non-fatal — training continues."""
+        keep disk usage bounded. Errors are non-fatal — training continues.
+
+        The snapshot (cheap shallow copies — PositionRecords are immutable
+        after creation) is taken on the caller thread; the expensive
+        pickle+gzip+write (30-90 s for a full buffer) runs on a background
+        thread so it no longer stalls the training loop for its whole
+        duration (audit 2026-07-02 S15). While the worker pickles, the GIL
+        is mostly free during the main thread's GPU waits, so the two
+        interleave well. At most one dump is in flight; if the previous one
+        is still running, this save is skipped (the next cadence catches up).
+        """
+        if (self._buffer_dump_thread is not None
+                and self._buffer_dump_thread.is_alive()):
+            print("[Trainer] Buffer snapshot skipped "
+                  "(previous dump still in progress)")
+            return
         try:
-            import gzip, pickle
             ckpt_dir = Path(self.cfg.checkpoint_dir)
             ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-            def _dump(obj, path: Path):
-                tmp = path.with_suffix(path.suffix + ".tmp")
-                with gzip.open(tmp, "wb", compresslevel=3) as f:
-                    pickle.dump(obj, f, protocol=4)
-                tmp.replace(path)  # atomic on POSIX, best-effort on Windows
 
             # Per-slot EFFECTIVE priorities = the SumTree leaves (they already
             # include the draw multiplier). NOTE: this function was originally
@@ -690,29 +762,50 @@ class Trainer:
             # failed with AttributeError on the SumTree-based PER buffer.
             rb = self.replay_buffer
             cap = rb.tree.capacity
-            leaf_prios = rb.tree.tree[cap - 1: cap - 1 + cap].copy()
             replay_state = {
-                "data":       rb._data,
-                "priorities": leaf_prios,
+                # list() = consistent point-in-time snapshot of the slot
+                # pointers; add() replacing slots afterwards can't tear it.
+                "data":       list(rb._data),
+                "priorities": rb.tree.tree[cap - 1: cap - 1 + cap].copy(),
                 "prio_mult":  rb._prio_mult.copy(),
                 "ptr":        rb._ptr,
                 "size":       rb._size,
                 "step":       rb._step,
                 "max_prio":   rb._max_prio,
             }
-            _dump(replay_state, ckpt_dir / "replay.pkl.gz")
-
             teacher_state = {
-                "data": self.teacher_buffer._data,
+                "data": list(self.teacher_buffer._data),
                 "ptr":  self.teacher_buffer._ptr,
                 "size": self.teacher_buffer._size,
             }
-            _dump(teacher_state, ckpt_dir / "teacher.pkl.gz")
-            print(f"[Trainer] Buffer snapshot saved "
-                  f"(replay={len(self.replay_buffer):,}, "
-                  f"teacher={len(self.teacher_buffer):,})")
+            n_replay, n_teacher = len(rb), len(self.teacher_buffer)
         except Exception as e:  # noqa: BLE001
-            print(f"[Trainer] Buffer save skipped: {type(e).__name__}: {e}")
+            print(f"[Trainer] Buffer snapshot skipped: {type(e).__name__}: {e}")
+            return
+
+        def _dump_worker():
+            try:
+                import gzip, pickle
+
+                def _dump(obj, path: Path):
+                    tmp = path.with_suffix(path.suffix + ".tmp")
+                    with gzip.open(tmp, "wb", compresslevel=3) as f:
+                        pickle.dump(obj, f, protocol=4)
+                    tmp.replace(path)  # atomic on POSIX, best-effort on Windows
+
+                _dump(replay_state,  ckpt_dir / "replay.pkl.gz")
+                _dump(teacher_state, ckpt_dir / "teacher.pkl.gz")
+                print(f"[Trainer] Buffer snapshot saved "
+                      f"(replay={n_replay:,}, teacher={n_teacher:,})",
+                      flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[Trainer] Buffer save skipped: "
+                      f"{type(e).__name__}: {e}", flush=True)
+
+        import threading
+        self._buffer_dump_thread = threading.Thread(
+            target=_dump_worker, daemon=True, name="BufferDump")
+        self._buffer_dump_thread.start()
 
     def _load_buffers(self) -> None:
         """Counterpart to _save_buffers. Called from load_checkpoint."""
@@ -919,6 +1012,7 @@ class Trainer:
         n_games: int = 200,
         progress=None,
         max_moves: int = 300,
+        batched_bs: int = 0,
     ) -> tuple[int, int, int]:
         """
         Play n_games between current_model and opponent_model.
@@ -928,6 +1022,11 @@ class Trainer:
         after every game (used by tools/run_arena.py for a live tally).
         `max_moves` caps each game's length (a too-low cap turns slow
         conversions into draws; the in-training default of 300 is unchanged).
+        `batched_bs`, if > 0, runs each move's search through `run_batched_sims`
+        (one NN forward shared across that many leaves) instead of the
+        single-leaf loop — same tree statistics, far fewer GPU launches, which
+        is what lets an on-demand arena run quickly alongside live training.
+        The in-training caller leaves it at 0 (unchanged behaviour).
         """
         from mcts.tree import MCTSTree
         from engine.rules import get_game_result, GameResult
@@ -959,6 +1058,7 @@ class Trainer:
             black_tree.reset(board)
             move_count = 0
             result = None
+            q_white = None  # last search Q, white's perspective (adjudication)
 
             while True:
                 is_white_turn = (board.side_to_move == 0)
@@ -967,10 +1067,34 @@ class Trainer:
                 # Evaluation games: NO exploration noise, greedy move choice.
                 # The defaults (noise on, τ=0.1 sampling) made arena results
                 # noisy and weakened discrimination (audit P5-5).
-                move, _ = tree.search(board, n_sims,
-                                      temperature=0.0,
-                                      use_dca=False, keep_history=True,
+                if batched_bs > 0:
+                    # Fast path: share one NN forward across `batched_bs`
+                    # distinct leaves per round. Produces the same visit-count
+                    # statistics as the single-leaf loop below (select_move
+                    # reads those), just with ~n_sims/batched_bs GPU launches
+                    # instead of n_sims — the difference between an arena that
+                    # finishes in minutes and one that fights training for the
+                    # GPU for an hour.
+                    tree.begin_search(board, keep_history=True,
                                       add_noise=False)
+                    done = 0
+                    while done < n_sims:
+                        adv = tree.run_batched_sims(n_sims - done,
+                                                    batch_size=batched_bs)
+                        if adv <= 0:
+                            break
+                        done += adv
+                    move, _ = tree.select_move(0.0)
+                else:
+                    move, _ = tree.search(board, n_sims,
+                                          temperature=0.0,
+                                          use_dca=False, keep_history=True,
+                                          add_noise=False)
+                # Capture the root Q of the search that just ran (before
+                # advance moves the root) for move-cap adjudication below.
+                q_stm = tree.root_value()
+                q_white = q_stm if is_white_turn else -q_stm
+
                 new_board = board.apply_move(move)
 
                 # Advance both trees
@@ -983,6 +1107,21 @@ class Trainer:
                 if r != GameResult.ONGOING or move_count >= max_moves:
                     result = r
                     break
+
+            # Move-cap adjudication (audit 2026-07-02 S2): counting every
+            # cap-hit as a draw made the arena blind — both nets convert
+            # poorly, so ~all games ended "drawn", ELO updates were ~0 and
+            # the pool ELO sat flat at ~1000 for 100k steps. Mirror the
+            # self-play rule: the final search Q decides clearly-won
+            # positions; only genuinely balanced cap-hits stay draws.
+            if result == GameResult.ONGOING:
+                thr = float(getattr(self.cfg, "adjudicate_q_threshold", 0.0))
+                if thr > 0.0 and q_white is not None and q_white >= thr:
+                    result = GameResult.WHITE_WIN
+                elif thr > 0.0 and q_white is not None and q_white <= -thr:
+                    result = GameResult.BLACK_WIN
+                else:
+                    result = GameResult.DRAW
 
             if result == GameResult.WHITE_WIN:
                 if current_is_white: wins += 1

@@ -73,7 +73,11 @@ class ChessAIConfig:
     material_scale: float = 12.0
 
     # ── Optimizer ────────────────────────────────────────────────────────
-    lr_initial: float = 1e-3       # Peak LR after warmup
+    lr_initial: float = 5e-4       # Peak LR after warmup (halved from 1e-3 after
+                                   # the ~step-100k self-play collapse: net lost
+                                   # ~158 Elo as the policy lost sharpness and
+                                   # games drifted to the move cap. Lower peak LR
+                                   # adds stability margin on the rollback restart.)
     lr_backbone_mult: float = 1.0  # Backbone LR multiplier
     lr_head_mult: float = 0.5      # Policy / Value head LR multiplier
     lr_gru_mult: float = 0.3       # GRU encoder LR multiplier
@@ -291,7 +295,19 @@ class ChessAIConfig:
                                        # Stockfish (or raise this) once the net
                                        # approaches the seeded teacher's level.
     teacher_batch_ratio: float = 0.30  # Fraction of training batch from teacher buf
-    teacher_loss_weight: float = 1.0   # Scale of the teacher KL term in total loss
+    teacher_loss_weight: float = 1.0   # Scale of the teacher term in total loss
+    # Anneal the teacher weight linearly from `teacher_loss_weight` down to
+    # `teacher_weight_final` between the two steps below (audit 2026-07-02
+    # S8): a STATIC 150k teacher set at constant weight gets each position
+    # replayed ~100x per 100k steps — the policy drifts into memorising the
+    # seeded Stockfish moves and ceilings at the teacher's level. Watch
+    # loss/teacher_kl in TB: a drift toward 0 = memorisation. Set
+    # anneal_end <= anneal_start to disable annealing entirely. The window
+    # is anchored to the seeding date (step ~100k) — re-anchor it if the
+    # teacher buffer is re-seeded with stronger data.
+    teacher_weight_final: float = 0.3
+    teacher_weight_anneal_start: int = 100_000
+    teacher_weight_anneal_end: int = 150_000
 
     # ── Replay buffer (Prioritized Experience Replay) ────────────────────
     replay_buffer_cap: int = 2000000  # hw-derived
