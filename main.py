@@ -163,34 +163,15 @@ def initialise_system(args) -> torch.device:
         _random.seed(CONFIG.seed)
         print(f"[main] All RNGs seeded with {CONFIG.seed}")
 
-    # CUDA setup
+    # CUDA setup — TF32 / cudnn autotune / SDPA prefs. Centralised in
+    # model.network.setup_cuda_backend (audit 2026-07-02 S5) so the tool
+    # entry points get the identical configuration; build_model calls it
+    # too, this early call just makes the flags active before any probe-
+    # adjacent CUDA work.
     device = torch.device(CONFIG.device)
     if device.type == "cuda":
-        # TF32 for matmul + cudnn convs (Ampere / Ada / Blackwell): essentially
-        # free vs. fp32 precision-wise, ~2-3× faster.
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        # cudnn autotuner picks the best conv kernel for each new shape — we
-        # have static shapes so the one-shot tune is pure win.
-        torch.backends.cudnn.benchmark  = True
-        # Tells the matmul dispatcher it may use TF32 / BF16 internal precision
-        # for fp32 matmuls (the GRU encoder is forced fp32 for cuDNN's RNN
-        # fastpath, so this is its main beneficiary). 'high' = TF32 if
-        # available, no behaviour change otherwise.
-        try:
-            torch.set_float32_matmul_precision("high")
-        except AttributeError:
-            pass  # PyTorch < 1.12
-
-        # Prefer flash / mem-efficient SDPA kernels over the math backend —
-        # no Attention in the current ChessNet, but harmless and ready if a
-        # future variant adds one. Guarded for older PyTorch versions.
-        try:
-            torch.backends.cuda.enable_flash_sdp(True)
-            torch.backends.cuda.enable_mem_efficient_sdp(True)
-            torch.backends.cuda.enable_math_sdp(False)
-        except AttributeError:
-            pass  # PyTorch < 2.0
+        from model.network import setup_cuda_backend
+        setup_cuda_backend()
 
     # (PYTORCH_CUDA_ALLOC_CONF is set at module import time, before torch —
     # setting it here was too late: CUDA was already initialised; audit P11-2.)
@@ -457,7 +438,13 @@ def _run_arena_and_update(trainer, model, pool, logger) -> None:
     if not opp_path or not opp_id:
         return
     opp_model = pool.load_model_from_path(model, opp_path, trainer.device)
-    wins, draws, losses = trainer.run_arena(model, opp_model, 100)
+    # batched_bs: share one NN forward across 32 leaves per search round —
+    # the previous single-leaf path fired 128 individual GPU forwards per
+    # move and starved training for the arena's whole duration (audit
+    # 2026-07-02 S6). Also respect config.arena_games instead of a
+    # hard-coded 100 (dead knob until now).
+    wins, draws, losses = trainer.run_arena(
+        model, opp_model, trainer.cfg.arena_games, batched_bs=32)
     elo_diff, lo, hi = ELOSystem.elo_difference_ci(wins, draws, losses)
     # Rate against the REAL pool entry (the old code updated a phantom
     # player literally named "best_pool"; audit P7-1c).
@@ -466,6 +453,13 @@ def _run_arena_and_update(trainer, model, pool, logger) -> None:
     )
     logger.log_elo(new_elo, pool.best_pool_elo(), trainer.global_step)
     pool.save_state()
+    # Persist the ELO history NOW — the end-of-pipeline save in main() is
+    # effectively unreachable under the crash supervisor (the CSV sat at
+    # 17 bytes after weeks of training; audit 2026-07-02).
+    try:
+        pool.elo_system.save_csv(Path(CONFIG.checkpoint_dir) / "elo_history.csv")
+    except Exception as e:  # noqa: BLE001 — bookkeeping must not kill training
+        print(f"[Arena] elo_history.csv save skipped: {e}")
     print(f"[Arena] Step {trainer.global_step}: W{wins}/D{draws}/L{losses}  "
           f"ELO diff={elo_diff:+.0f} (CI {lo:+.0f}..{hi:+.0f})  "
           f"new_ELO={new_elo:.0f}")

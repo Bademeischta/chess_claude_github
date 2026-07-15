@@ -297,10 +297,51 @@ class ChessNet(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
 
+# ── CUDA backend setup (TF32 / cudnn autotune / SDPA) ────────────────────
+
+_CUDA_BACKEND_READY = False
+
+
+def setup_cuda_backend() -> None:
+    """Enable TF32, cudnn autotuning and preferred SDPA kernels. Idempotent.
+
+    Audit 2026-07-02 (S5): these flags previously lived only in
+    main.initialise_system, so every tool entry point (web GUI, run_arena,
+    elo_vs_stockfish, bench_infer, uci_engine, lichess bot) silently ran
+    WITHOUT TF32 and without the cudnn autotuner — the fp32 GRU island and
+    all convolutions were measurably slower, and bench_infer under-measured.
+    Centralised here and called from build_model so every entry point that
+    builds a model gets the same backend configuration.
+    """
+    global _CUDA_BACKEND_READY
+    if _CUDA_BACKEND_READY:
+        return
+    _CUDA_BACKEND_READY = True
+    if not torch.cuda.is_available():
+        return
+    # TF32 for matmul + cudnn convs (Ampere/Ada/Blackwell): essentially free
+    # precision-wise, ~2-3x faster fp32 matmuls (main beneficiary: the GRU).
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    # Static shapes throughout → one-shot autotune is pure win.
+    torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision("high")
+    except AttributeError:
+        pass  # PyTorch < 1.12
+    try:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cuda.enable_math_sdp(False)
+    except AttributeError:
+        pass  # PyTorch < 2.0
+
+
 # ── Factory with torch.compile ────────────────────────────────────────────
 
 def build_model(cfg, compile_model: bool = True) -> ChessNet:
     """Build a ChessNet from config and optionally compile it."""
+    setup_cuda_backend()
     # Gradient-checkpointing threshold: None = auto (off for ≤14 blocks,
     # since activations fit comfortably in 12 GB VRAM and recompute would
     # just waste 20-30% backward time). An explicit int overrides.
