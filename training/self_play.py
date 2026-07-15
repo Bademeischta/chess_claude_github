@@ -25,11 +25,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from engine.board import Board, STARTPOS_FEN
+from engine.board import Board
 from engine.rules import (
     get_game_result, GameResult, probe_tablebase, is_tablebase_available,
 )
-from mcts.tree import MCTSTree, ParallelMCTS, GameRecord, fill_history
+from mcts.tree import ParallelMCTS, GameRecord
 from training.replay_buffer import (
     PrioritizedReplayBuffer, TeacherBuffer, PositionRecord,
 )
@@ -81,87 +81,11 @@ class SelfPlayWorker:
         # RoundDriver.select. Logged per batch when it changes.
         self._last_stale_count = 0
 
-    # ── Single-game generation ────────────────────────────────────────────
-
-    def run_single_game(
-        self, tree: MCTSTree, is_teacher: bool = False
-    ) -> GameRecord:
-        """
-        Play one complete game from the starting position.
-        Returns a GameRecord with all positions, policy targets, and WDL labels.
-        """
-        n_sims = self.cfg.mcts_sims_teacher if is_teacher else self.cfg.mcts_sims
-        board  = Board.from_fen(STARTPOS_FEN)
-
-        record = GameRecord()
-        record.is_teacher = is_teacher
-
-        move_num = 0
-        while True:
-            temperature = (
-                1.0 if move_num < self.cfg.temperature_moves
-                else self.cfg.temperature_final
-            )
-
-            # Capture board state before the move
-            board_t = board.to_tensor()
-
-            # MCTS search. keep_history after move 0 so the GRU history that
-            # advance() maintains is not wiped every move.
-            move, policy_target = tree.search(
-                board, n_sims, temperature, use_dca=True,
-                keep_history=(move_num > 0),
-            )
-
-            # Capture the GRU history AFTER the search: search() resets the
-            # tree at move 0, so reading it earlier returned stale frames
-            # from the previous game (audit P3-4 note).
-            history_t = self._get_history(tree)
-
-            # Record
-            record.board_tensors.append(board_t)
-            record.history_tensors.append(history_t)
-            record.policy_targets.append(policy_target)
-            record.mcts_qs.append(tree.root_value())
-            record.move_numbers.append(move_num)
-            record.sides.append(board.side_to_move)
-            record.phases.append(board.get_phase())
-            record.piece_counts.append(board.piece_count())
-
-            # Apply move
-            new_board = board.apply_move(move)
-            tree.advance(move, new_board)
-            board = new_board
-            move_num += 1
-
-            # Game termination
-            result = get_game_result(board)
-            if result != GameResult.ONGOING or move_num >= self.cfg.max_game_moves:
-                if result == GameResult.WHITE_WIN:
-                    game_val = 1.0
-                elif result == GameResult.BLACK_WIN:
-                    game_val = 0.0
-                else:
-                    game_val = 0.5
-                record.game_result = game_val
-
-                # Assign per-position WDL labels from the RECORDED side to
-                # move (robust to non-startpos seeds; see _finalize_record).
-                for side in record.sides:
-                    wdl = (game_val if side == 0 else 1.0 - game_val)
-                    record.wdl_labels.append(wdl)
-
-                break
-
-        return record
-
-    def _get_history(self, tree: MCTSTree) -> np.ndarray:
-        # HISTORY CONVENTION (audit P3-4): positions strictly BEFORE the
-        # current board. The running history's last entry is the current
-        # position (seeded by reset / appended by advance), so drop it.
-        T = self.cfg.gru_history_len
-        buf = np.zeros((T, self.cfg.input_planes, 8, 8), dtype=np.float32)
-        return fill_history(buf, tree._board_history[:-1], T)
+    # NOTE (audit S14): a single-game generator (run_single_game +
+    # _get_history) used to live here. Production exclusively uses the
+    # pooled ParallelMCTS.game_stream below (which also carries the
+    # cap-adjudication and resign logic run_single_game lacked — audit
+    # E-2); the single-game path had zero call sites and was removed.
 
     # ── Batch generation (synchronous, parallel via ParallelMCTS) ────────────
 

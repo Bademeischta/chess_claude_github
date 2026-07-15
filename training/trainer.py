@@ -130,9 +130,6 @@ class Trainer:
         self._alpha_v_global  = 1.0
         self._entropy_history: list = []
 
-        # ── Auxiliary loss (active for first `aux_steps` steps) ────────
-        self._aux_active = True
-
         # ── Sync-cost mitigation state ─────────────────────────────────
         # (The NaN guard now runs every step, reusing the loss/total D2H
         # sync that was already paid per step for metrics — see train_step.)

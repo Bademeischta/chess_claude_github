@@ -27,8 +27,7 @@ derived = run_probe(write=False)
 update_config_from_dict(derived)
 OUT["hw_derived_config"] = {k: derived[k] for k in
                             ("device", "precision", "torch_compile", "batch_size",
-                             "parallel_games", "dataloader_workers",
-                             "replay_buffer_cap", "pin_memory")}
+                             "parallel_games", "replay_buffer_cap")}
 
 ckpt_path = latest_checkpoint(str(ROOT / "checkpoints"))
 OUT["latest_checkpoint"] = ckpt_path

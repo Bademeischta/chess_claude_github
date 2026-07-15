@@ -16,7 +16,6 @@ class ChessAIConfig:
     device: str = "cuda"  # hw-derived
     precision: str = "bf16"  # hw-derived
     torch_compile: bool = False  # hw-derived
-    pin_memory: bool = True  # hw-derived
 
     # ── Inference backend (self-play / arena / --play only; training always
     #    uses eager PyTorch) ───────────────────────────────────────────────
@@ -100,8 +99,8 @@ class ChessAIConfig:
 
     # Auxiliary value head supervision. The aux head is now a learnable
     # material-balance regressor (see model/heads.py ValueHead.piece_values)
-    # whose target is the game outcome. Active for ALL training (not gated by
-    # aux_steps any more — the field is kept for checkpoint compatibility).
+    # whose target is the game outcome. Active for ALL training (the old
+    # aux_steps gate and its config field were removed — audit S14).
     # L2-pull of `value_head.piece_values` back toward the classical
     # [P=1, N=3, B=3, R=5, Q=9, K=0] vector. Without it, the auxiliary head
     # is free to learn arbitrary piece valuations (the data only constrains
@@ -123,7 +122,6 @@ class ChessAIConfig:
                                   # a helper, not the dominant term — the
                                   # real fix for the collapse was the PUCT
                                   # perspective bug + WDL cross-entropy.
-    aux_steps: int = 5_000        # legacy: no longer consulted by the trainer
 
     # ── TD(λ) value blending ─────────────────────────────────────────────
     # Blend mc_return with the MCTS root Q on positions inside the window.
@@ -391,18 +389,12 @@ class ChessAIConfig:
     # ── Training batch ───────────────────────────────────────────────────
     batch_size: int = 512  # hw-derived
 
-    # ── DataLoader ───────────────────────────────────────────────────────
-    dataloader_workers: int = 5  # hw-derived
-    # prefetch_factor=4 instead of PyTorch's default 2: GPU is the bottleneck
-    # here, so having a few extra batches ready to go avoids the data path
-    # ever blocking the optimizer. 4 is a reasonable default; values >8 mostly
-    # eat RAM without buying additional pipeline depth.
-    prefetch_factor: int = 4
-    # persistent_workers keeps the DataLoader workers alive between epochs
-    # (~10-30 ms spawn cost saved per epoch boundary on Windows). The
-    # trainer currently samples directly from the replay buffer, so this
-    # field is consumed only when a real DataLoader path is wired up.
-    persistent_workers: bool = True
+    # NOTE (audit S14): the DataLoader knobs that used to live here
+    # (dataloader_workers / prefetch_factor / persistent_workers /
+    # pin_memory) were removed — no DataLoader path exists; the trainer
+    # samples the replay buffer directly, which at ~25 MB H2D per step is
+    # the measured-right design. Re-add them only together with an actual
+    # DataLoader implementation.
 
     # ── Checkpointing / logging ──────────────────────────────────────────
     # 1000 → 200: with native C++ crashes (chess_ext extension has known

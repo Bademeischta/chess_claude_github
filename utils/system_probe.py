@@ -181,9 +181,6 @@ def _derive_config(gpu: dict, cpu: dict, ram: dict) -> dict:
     # per-tree state on the measured configuration.
     parallel_games = max(8, min(160, vram_free_mb // 64))
 
-    # ── DataLoader workers ─────────────────────────────────────────────────
-    dataloader_workers = max(2, min(8, log_cores // 3))
-
     # ── Replay buffer ──────────────────────────────────────────────────────
     # Real per-position cost AFTER the sparse-policy compression in
     # replay_buffer.PositionRecord:
@@ -218,9 +215,7 @@ def _derive_config(gpu: dict, cpu: dict, ram: dict) -> dict:
         "torch_compile": torch_compile,
         "batch_size": batch_size,
         "parallel_games": parallel_games,
-        "dataloader_workers": dataloader_workers,
         "replay_buffer_cap": replay_buffer_cap,
-        "pin_memory": gpu["available"],
     }
 
 
@@ -248,9 +243,7 @@ def write_config(derived: dict, config_path: Path | None = None) -> None:
         "torch_compile": "torch_compile",
         "batch_size": "batch_size",
         "parallel_games": "parallel_games",
-        "dataloader_workers": "dataloader_workers",
         "replay_buffer_cap": "replay_buffer_cap",
-        "pin_memory": "pin_memory",
     }
 
     for idx, line in enumerate(lines):
@@ -317,7 +310,6 @@ def print_summary(gpu: dict, cpu: dict, ram: dict, derived: dict) -> None:
     print(f"  Precision        : {derived['precision']}")
     print(f"  Batch size       : {derived['batch_size']}")
     print(f"  Parallel games   : {derived['parallel_games']}")
-    print(f"  DataLoader wkrs  : {derived['dataloader_workers']}")
     print(f"  Replay buf cap   : {derived['replay_buffer_cap']:,}")
     print(f"  torch.compile    : {'on' if derived['torch_compile'] else 'off'}")
 

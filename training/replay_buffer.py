@@ -29,7 +29,6 @@ import numpy as np
 from typing import List, Optional, Tuple
 
 import torch
-from torch.utils.data import Dataset
 
 
 # ── SumTree for PER ─────────────────────────────────────────────────────────
@@ -466,65 +465,7 @@ class TeacherBuffer:
         self._size = state["size"]
 
 
-# ── PyTorch Dataset wrapper ───────────────────────────────────────────────
-
-class ReplayDataset(Dataset):
-    """
-    Wraps a list of PositionRecord objects as a PyTorch Dataset.
-    Used to feed the DataLoader in the training loop.
-    """
-
-    def __init__(
-        self,
-        records: List[PositionRecord],
-        weights: Optional[np.ndarray] = None,
-        precision: str = "bf16",
-    ) -> None:
-        self.records   = records
-        self.weights   = weights
-        self.precision = precision
-
-    def __len__(self) -> int:
-        return len(self.records)
-
-    def _dtype(self) -> torch.dtype:
-        if self.precision == "bf16":   return torch.bfloat16
-        elif self.precision == "fp16": return torch.float16
-        return torch.float32
-
-    def __getitem__(self, idx: int) -> dict:
-        rec  = self.records[idx]
-        dt   = self._dtype()
-        item = {
-            "board":   torch.from_numpy(rec.board_tensor).to(dt),
-            "history": torch.from_numpy(rec.history_tensor).to(dt),
-            "policy":  torch.from_numpy(rec.policy_target).float(),  # Keep as fp32
-            "wdl":     torch.tensor(rec.wdl_label, dtype=torch.float32),
-            "mcts_q":  torch.tensor(rec.mcts_q, dtype=torch.float32),
-            "phase":   torch.tensor(rec.phase, dtype=torch.long),
-            "piece_count": torch.tensor(rec.piece_count, dtype=torch.long),
-            "move_number": torch.tensor(rec.move_number, dtype=torch.long),
-            "is_teacher":  torch.tensor(rec.is_teacher, dtype=torch.bool),
-            "weight":  torch.tensor(
-                self.weights[idx] if self.weights is not None else 1.0,
-                dtype=torch.float32,
-            ),
-        }
-        return item
-
-
-def collate_records(
-    records: List[PositionRecord],
-    teacher_records: Optional[List[PositionRecord]],
-    teacher_ratio: float = 0.30,
-    is_weights: Optional[np.ndarray] = None,
-    precision: str = "bf16",
-) -> Tuple[ReplayDataset, "ReplayDataset | None"]:
-    """
-    Create mixed ReplayDataset (70 % replay + 30 % teacher) for one training batch.
-    """
-    dataset = ReplayDataset(records, weights=is_weights, precision=precision)
-    teacher_dataset = None
-    if teacher_records:
-        teacher_dataset = ReplayDataset(teacher_records, precision=precision)
-    return dataset, teacher_dataset
+# NOTE (audit S14): a ReplayDataset/collate_records DataLoader wrapper
+# used to live here. It had zero call sites -- the trainer samples the
+# PER buffer directly (the measured-right design at ~25 MB H2D/step) --
+# and was removed together with the dataloader_* config knobs.
