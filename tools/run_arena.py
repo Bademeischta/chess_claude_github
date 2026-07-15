@@ -21,10 +21,14 @@ Usage:
 Notes:
   * Default opponent is the strongest pool member from pool_state.json. To
     measure PROGRESS over a known gap, pass --opponent <an older net_step*.pt>.
+  * BATCHED by default: each move's search shares one NN forward across
+    --batch-size leaves (≈ one forward per batch instead of per sim), so the
+    whole run finishes in minutes even while sharing the GPU with training.
+    Pass --no-batched for the old single-leaf path.
   * If training is running, both processes share the GPU: the load-governor
-    throttles training to ~25% while this runs, and this arena is slower too.
-    For a fast, clean number, pause training first (Ctrl+C in its window),
-    run this, then restart training.
+    throttles training to ~25% while this runs. Because the batched path is
+    short, that throttle window is brief — fine to run alongside training.
+    For an absolutely clean number you can still pause training first.
 """
 
 from __future__ import annotations
@@ -79,10 +83,19 @@ def main() -> int:
     ap.add_argument("--sims", type=int, default=64,
                     help="MCTS sims per move (default 64 = fast diagnostic; "
                          "raise toward 128 for a closer-to-training comparison)")
-    ap.add_argument("--max-moves", type=int, default=200,
-                    help="per-game move cap (default 200). Arena has no resign, "
+    ap.add_argument("--max-moves", type=int, default=160,
+                    help="per-game move cap (default 160). Arena has no resign, "
                          "so weak conversions otherwise drag games to 300 moves "
                          "and the run takes hours; unconverted wins count as draws.")
+    ap.add_argument("--batched", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="share one NN forward across --batch-size leaves per "
+                         "search round (default on = fast, training-friendly). "
+                         "--no-batched uses the old single-leaf path.")
+    ap.add_argument("--batch-size", type=int, default=32,
+                    help="leaves per batched NN forward (default 32). Higher = "
+                         "fewer GPU launches but more wasted sims if it "
+                         "overshoots the remaining count.")
     args = ap.parse_args()
 
     update_config_from_dict(run_probe(write=False))
@@ -120,11 +133,15 @@ def main() -> int:
     trainer.cfg = CONFIG
     trainer.device = device
 
+    batched_bs = int(args.batch_size) if args.batched else 0
+    mode = f"batched x{batched_bs}" if batched_bs else "single-leaf"
+
     print(f"[arena] current : {current_path}")
     print(f"[arena] opponent: {opp_path}")
     print(f"[arena] {args.games} games @ {CONFIG.mcts_sims} sims/move, "
           f"cap {args.max_moves} moves, "
-          f"openings={getattr(CONFIG, 'arena_opening_plies', 8)} plies, greedy")
+          f"openings={getattr(CONFIG, 'arena_opening_plies', 8)} plies, "
+          f"greedy, {mode}")
 
     def _progress(done, total, w, d, l):
         print(f"\r[arena] {done}/{total} games  W{w}/D{d}/L{l}",
@@ -133,7 +150,8 @@ def main() -> int:
     print("[arena] playing...")
     wins, draws, losses = trainer.run_arena(
         current, opponent, args.games,
-        progress=_progress, max_moves=args.max_moves)
+        progress=_progress, max_moves=args.max_moves,
+        batched_bs=batched_bs)
     print()  # newline after the live tally
 
     n = wins + draws + losses
