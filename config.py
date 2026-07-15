@@ -189,14 +189,21 @@ class ChessAIConfig:
     # (probing lives in Python) and on any driver error (fail-open to the
     # legacy loop).
     cpp_round_driver: bool = True
-    cpp_round_threads: int = 1     # was 0 (auto≈4). The C++ RoundDriver.select
-                                   # parallel_for was the crash site of the
-                                   # recurring access violation (tree.py:1153)
-                                   # — serialising it (1 thread) dodges a likely
-                                   # race while keeping the driver + history-GPU
-                                   # cache. GPU forward is the bottleneck, so the
-                                   # CPU-selection throughput cost is small. If
-                                   # crashes persist, set cpp_round_driver=False.
+    cpp_round_threads: int = 0     # 0 = auto (≈4). History: serialised to 1 on
+                                   # 2026-06-22 against the recurring access
+                                   # violation in RoundDriver.select — but the
+                                   # crash then ALSO fired single-threaded
+                                   # (supervisor.log 06-27..07-08), so the
+                                   # serialisation only cost ~10% sims/s without
+                                   # protecting anything. Re-enabled 2026-07-15
+                                   # (user decision) after the S1 instrumentation
+                                   # pass: MCTSNode lifecycle canaries +
+                                   # stale-root guards now convert the corruption
+                                   # into a precise exception (fail-open to the
+                                   # Python loop) instead of a native crash, and
+                                   # 2h of thread=4 stress at production shape
+                                   # (527k positions) ran clean. If crashes
+                                   # persist, set cpp_round_driver=False.
 
     # ── Self-play ────────────────────────────────────────────────────────
     parallel_games: int = 6  # hw-derived
