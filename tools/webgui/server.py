@@ -130,9 +130,21 @@ def _r_setfen(session: GameSession, data: dict) -> dict:
     return session.set_fen(str(data.get("fen", "")), data.get("human_white"))
 
 
+def _r_checkpoints(session: GameSession, data: dict) -> dict:
+    """Engine selector inventory (plan B3): every playable checkpoint with
+    its known strength labels + which one THIS session is playing."""
+    items = MANAGER.checkpoint_inventory()
+    return {"current": getattr(session, "ckpt_path", None), "items": items}
+
+
+def _r_engine(session: GameSession, data: dict) -> dict:
+    return MANAGER.switch_model(session, str(data.get("path", "")))
+
+
 GET_ROUTES = {
-    "/api/state":    _r_state,
-    "/api/threats":  _r_threats,
+    "/api/state":       _r_state,
+    "/api/threats":     _r_threats,
+    "/api/checkpoints": _r_checkpoints,
 }
 
 POST_ROUTES = {
@@ -143,6 +155,7 @@ POST_ROUTES = {
     "/api/resign":   lambda s, d: s.resign(),
     "/api/hint":     lambda s, d: s.hint(),
     "/api/setfen":   _r_setfen,
+    "/api/engine":   _r_engine,
 }
 
 
@@ -326,9 +339,22 @@ class Handler(BaseHTTPRequestHandler):
 def serve(port: int, resume: Optional[str], sims: Optional[int],
           side_white: bool, max_sessions: int = 4) -> int:
     from engine.harness import load_engine
+    from model.inference import TorchInferenceEngine
 
-    handle = load_engine(resume,
+    # Eager inference for the whole web-GUI process — deliberately NOT the
+    # CUDA-graph engine. Measured failure (2026-07-15): loading a SECOND
+    # model (the checkpoint selector, plan B3) while a CUDA-graph replay
+    # was possible in another session poisoned the CUDA context with
+    # cudaErrorIllegalAddress even with all GPU work serialised behind one
+    # lock. Eager + batched leaves still plays at interactive speed
+    # (~0.5 s for the default 1,500 sims); training/self-play keep the
+    # graph engine, where its throughput actually matters.
+    handle = load_engine(resume, build_engine=False,
                          log=lambda m: print(m.replace("[harness]", "[web]")))
+    handle = handle.__class__(model=handle.model,
+                              engine=TorchInferenceEngine(handle.model),
+                              device=handle.device, cfg=handle.cfg,
+                              ckpt_path=handle.ckpt_path, step=handle.step)
 
     global MANAGER
     MANAGER = SessionManager(
@@ -336,6 +362,7 @@ def serve(port: int, resume: Optional[str], sims: Optional[int],
         max_sessions=max_sessions,
         default_sims=sims,
         default_side_white=side_white,
+        primary_ckpt=handle.ckpt_path,
     )
 
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)

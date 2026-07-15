@@ -752,6 +752,42 @@ function applySettings(s){
   document.getElementById('dyn-row').style.display  = (s.think_mode==='dynamic') ? 'grid' : 'none';
 }
 
+// ─── Engine checkpoint selector (plan B3) ─────────────────────────────
+function _ckptLabel(it){
+  let bits = [];
+  if (it.step != null) bits.push('step ' + it.step.toLocaleString());
+  if (it.sf_elo != null) bits.push('~' + Math.round(it.sf_elo) + ' Elo (SF)');
+  else if (it.pool_elo != null) bits.push('pool ' + Math.round(it.pool_elo));
+  return it.name + (bits.length ? '  —  ' + bits.join(', ') : '');
+}
+async function loadCheckpoints(){
+  try {
+    let d = await fetch('/api/checkpoints').then(r => r.json());
+    let sel = document.getElementById('ckptSel');
+    sel.innerHTML = '';
+    (d.items || []).forEach(it => {
+      let o = document.createElement('option');
+      o.value = it.path; o.textContent = _ckptLabel(it);
+      if (d.current && it.path === d.current) o.selected = true;
+      sel.appendChild(o);
+    });
+    if (!d.items || !d.items.length) {
+      sel.innerHTML = '<option value="">(no checkpoints found)</option>';
+    }
+  } catch (e) { /* panel degrades gracefully */ }
+}
+async function switchCheckpoint(){
+  let sel = document.getElementById('ckptSel');
+  let info = document.getElementById('ckptInfo');
+  if (!sel.value) return;
+  info.textContent = 'loading checkpoint… (first load of a net takes a few seconds)';
+  let res = await post('/api/engine', {path: sel.value});
+  info.textContent = res && res.ok
+      ? 'switched — fresh game vs ' + sel.options[sel.selectedIndex].text
+      : 'switch failed: ' + ((res && res.error) || 'unknown error');
+}
+loadCheckpoints();
+
 // ─── Actions ──────────────────────────────────────────────────────────
 function newGame(asWhite){
   post('/api/new', {human_white: !!asWhite});

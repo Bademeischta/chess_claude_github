@@ -116,6 +116,16 @@
     <div class="card">
       <h3>AI settings <span style="float:right;color:var(--ink-fade);font-size:10px">applied live</span></h3>
 
+      <label class="field" style="margin-bottom:6px">
+        <span>Engine checkpoint</span>
+        <select id="ckptSel" onchange="switchCheckpoint()">
+          <option value="">(loading…)</option>
+        </select>
+      </label>
+      <div id="ckptInfo" style="font-size:10px;color:var(--ink-fade);margin-bottom:10px">
+        switching starts a fresh game against the chosen net
+      </div>
+
       <label class="field" style="margin-bottom:10px">
         <span>Thinking mode</span>
         <select id="thinkMode" onchange="settingChanged()">
