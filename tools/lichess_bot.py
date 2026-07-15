@@ -33,12 +33,7 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-import torch
-
-from config import CONFIG, update_config_from_dict
-from utils.system_probe import run_probe
-from model.network import build_model
-from model.inference import build_inference_engine
+from config import CONFIG
 from engine.board import Board, STARTPOS_FEN
 from engine.rules import get_game_result, GameResult
 from engine.movegen import _move_uci
@@ -135,25 +130,16 @@ def main() -> int:
               "(needs the bot:play scope on a BOT account).")
         return 1
 
-    update_config_from_dict(run_probe(write=False))
-    device = torch.device(CONFIG.device)
-
-    from utils.ckpt_arch import latest_checkpoint, match_arch
-    ckpt = args.resume or latest_checkpoint(CONFIG.checkpoint_dir)
-    match_arch(CONFIG, ckpt)
-    model = build_model(CONFIG, compile_model=False).eval()
-
-    if ckpt and Path(ckpt).exists():
-        st = torch.load(ckpt, map_location=device, weights_only=True)
-        base = model._orig_mod if hasattr(model, "_orig_mod") else model
-        base.load_state_dict(st["model"])
-        print(f"[lichess] Loaded {ckpt}")
-    else:
-        print("[lichess] No checkpoint — UNTRAINED net.")
+    # Shared bring-up (engine.harness) — replaces the local copy of the
+    # probe/checkpoint/match_arch/build/load/engine sequence. Also gains
+    # the Syzygy auto-detect the other play paths already had.
+    from engine.harness import load_engine
+    handle = load_engine(args.resume,
+                         log=lambda m: print(m.replace("[harness]", "[lichess]")))
 
     ctx = {
-        "model": model, "device": device,
-        "engine": build_inference_engine(CONFIG, model, device),
+        "model": handle.model, "device": handle.device,
+        "engine": handle.engine,
         "sims": args.sims if args.sims is not None else CONFIG.mcts_sims,
     }
 
