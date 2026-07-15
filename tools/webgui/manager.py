@@ -160,6 +160,7 @@ class SessionManager:
                 sess = GameSession(self.model, self.device,
                                    self.engine, self.cfg)
                 sess.ckpt_path = self.primary_ckpt  # engine-selector label
+                sess.load_persisted_settings()      # user prefs (plan B4)
                 if self.default_sims is not None:
                     sess.think_sims = int(self.default_sims)
                 self._sessions[sid] = sess

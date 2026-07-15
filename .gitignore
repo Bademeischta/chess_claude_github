@@ -35,6 +35,15 @@ env/
 # Claude Code internal
 .claude/
 
+# ngrok exposure artifacts — the .bat embeds a private auth token and the
+# .txt a live public URL to the auth-less web GUI. Never commit either.
+start_webgui_ngrok.bat
+ngrok_url.txt
+
+# Web-GUI persistence (plan B4) — local play artifacts, not source
+runs/games/
+runs/webgui_settings.json
+
 # Syzygy tablebases (~939 MB binary, regenerable via tools/download_syzygy.py)
 syzygy/
 *.rtbw

@@ -8,10 +8,11 @@ webgui.manager keys several of them by browser cookie (plan B2).
 
 from __future__ import annotations
 
-import json  # noqa: F401  (kept: helpers serialise wire payloads)
+import json
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from config import CONFIG  # noqa: F401
@@ -167,7 +168,37 @@ class GameSession:
             self._start_ponder()
         else:
             self._stop_ponder()
+        self._save_settings()
         self.emit("settings", self.settings_dict())
+
+    # Settings persist across server restarts (plan B4): saved as JSON on
+    # every change, loaded as defaults for NEW sessions. One shared file —
+    # think-mode preferences are per user, not per game.
+    _SETTINGS_PATH = Path(__file__).resolve().parents[2] / "runs" / \
+        "webgui_settings.json"
+
+    def _save_settings(self) -> None:
+        try:
+            self._SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            payload = self.settings_dict()
+            payload.pop("human_white", None)  # per-game, not a preference
+            self._SETTINGS_PATH.write_text(json.dumps(payload, indent=2),
+                                           encoding="utf-8")
+        except OSError:
+            pass  # persistence must never disturb play
+
+    def load_persisted_settings(self) -> None:
+        try:
+            data = json.loads(self._SETTINGS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        for k in ("think_mode", "think_sims", "think_time_s", "dynamic_min",
+                  "dynamic_max", "ponder_on", "temperature", "contempt"):
+            if k in data:
+                try:
+                    setattr(self, k, data[k])
+                except Exception:
+                    pass
 
     # ── Game life-cycle ──────────────────────────────────────────────────
 
@@ -825,6 +856,7 @@ class GameSession:
             self.result_text = ("Black wins (resignation)"
                                 if self.human_white else "White wins (resignation)")
         self._stop_ponder()
+        self._persist_pgn()
         self.emit("game_over", {"result": self.result_text})
         return {"ok": True}
 
@@ -867,6 +899,56 @@ class GameSession:
             GameResult.BLACK_WIN: "Black wins",
             GameResult.DRAW:      "Draw",
         }.get(res, "")
+        self._persist_pgn()
+
+    # ── Persistence (plan B4) ────────────────────────────────────────────
+
+    def _persist_pgn(self) -> None:
+        """Append the finished game as PGN to runs/games/webgui_YYYYMM.pgn.
+
+        Game history used to live only in memory — a server restart lost
+        every played game. Best-effort: persistence failures never disturb
+        play (the file may sit on OneDrive-synced storage)."""
+        try:
+            import chess
+            import chess.pgn
+            with self._lock:
+                if not self.history:
+                    return
+                moves = [h.get("uci") for h in self.history if h.get("uci")]
+                human_white = self.human_white
+                result_text = self.result_text
+            game = chess.pgn.Game()
+            game.headers["Event"] = "ChessAI web GUI"
+            game.headers["Date"] = time.strftime("%Y.%m.%d")
+            ai_name = "ChessAI"
+            ckpt = getattr(self, "ckpt_path", None)
+            if ckpt:
+                ai_name = f"ChessAI ({Path(ckpt).name})"
+            game.headers["White"] = "Human" if human_white else ai_name
+            game.headers["Black"] = ai_name if human_white else "Human"
+            if result_text.startswith("White wins"):
+                result = "1-0"
+            elif result_text.startswith("Black wins"):
+                result = "0-1"
+            else:
+                result = "1/2-1/2"
+            game.headers["Result"] = result
+            node = game
+            b = chess.Board()
+            for uci in moves:
+                mv = chess.Move.from_uci(uci)
+                if mv not in b.legal_moves:
+                    break  # takeback edge — persist the replayable prefix
+                node = node.add_variation(mv)
+                b.push(mv)
+            out_dir = Path(__file__).resolve().parents[2] / "runs" / "games"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / f"webgui_{time.strftime('%Y%m')}.pgn"
+            with open(out, "a", encoding="utf-8") as fh:
+                fh.write(str(game) + "\n\n")
+        except Exception as e:  # noqa: BLE001 — never disturb play
+            print(f"[web] PGN persistence skipped: {type(e).__name__}: {e}")
 
 
 _PIECE_LETTERS = ["P", "N", "B", "R", "Q", "K"]
