@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from engine.board import Board, STARTPOS_FEN
 from engine.rules import get_game_result, GameResult
 from engine.movegen import _move_uci
 from mcts.tree import MCTSTree
+from engine.harness import run_search, time_budget_s
 
 API = "https://lichess.org"
 
@@ -105,16 +107,31 @@ def _play_game(li: Lichess, game_id: str, my_id: str, ctx: dict) -> None:
         if not our_turn:
             continue
 
+        # Clock-aware budget via the SHARED time-control heuristic
+        # (engine.harness.time_budget_s = clock/25 + inc*3/4, same formula
+        # as the UCI engine — plan C3). The sims target stays as a quality
+        # ceiling; whichever budget is hit first ends the search, so the
+        # bot no longer flags in bullet nor rushes in classical.
+        stm_white = (board.side_to_move == 0)
+        clock_ms = state.get("wtime" if stm_white else "btime")
+        inc_ms = state.get("winc" if stm_white else "binc", 0) or 0
+        budget_s = time_budget_s(clock_ms if isinstance(clock_ms, int) else None,
+                                 int(inc_ms))
+
         tree = MCTSTree(CONFIG, ctx["model"], ctx["device"],
                         engine=ctx["engine"])
-        tree.reset(board)
         # Real play: greedy, NO root Dirichlet noise (the default add_noise
         # =True is for training-data diversity and weakened the bot's play;
-        # audit S10/P5-5).
-        mv, _ = tree.search(board, ctx["sims"],
-                            temperature=0.0,
-                            use_dca=False, keep_history=False,
-                            add_noise=False)
+        # audit S10/P5-5). Batched leaves via the shared search driver
+        # (plan C1/C3) instead of the old leaf-per-forward tree.search loop.
+        tree.begin_search(board, add_noise=False)
+        batch = int(getattr(ctx["engine"], "batch_size", 0)) or 32
+        run_search(tree,
+                   sims=ctx["sims"],
+                   deadline=(time.time() + budget_s) if budget_s else None,
+                   batch_size=batch)
+        a = tree.root_analysis(top_k=1, pv_len=1)
+        mv = a["top"][0][0] if a["top"] else tree.select_move(0.0)[0]
         li.post(f"/api/bot/game/{game_id}/move/{_move_uci(mv)}")
 
 
