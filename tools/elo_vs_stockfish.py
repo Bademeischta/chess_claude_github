@@ -11,6 +11,10 @@ colours, and reports our estimated ELO with a 95 % confidence interval
         --games 30 --elo 1500 --resume checkpoints/step_0050000.pt
 
 Read-only w.r.t. training (loads a checkpoint, plays games, prints a number).
+
+The match protocol itself lives in utils/sf_anchor.py (shared with the
+automatic in-training probe wired into main.py); this tool adds the CLI,
+the adaptive --auto bisection search, and result presentation.
 """
 
 from __future__ import annotations
@@ -26,21 +30,11 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-import torch
-import chess
-import chess.engine
-
-from config import CONFIG, update_config_from_dict
-from utils.system_probe import run_probe
-from utils.elo import ELOSystem
-from model.network import build_model
-from model.inference import build_inference_engine
-from engine.board import Board
-from engine.movegen import _move_uci
-from mcts.tree import MCTSTree
-
-
-from utils.ckpt_arch import latest_checkpoint, match_arch
+from config import CONFIG                                    # noqa: E402
+from engine.harness import load_engine                       # noqa: E402
+from utils.elo import ELOSystem                              # noqa: E402
+from utils.sf_anchor import (SKILL_ELO, play_anchor_match,   # noqa: E402
+                             resolve_stockfish_path)
 
 
 def main() -> int:
@@ -55,7 +49,7 @@ def main() -> int:
     ap.add_argument("--movetime", type=float, default=None,
                     help="Stockfish thinking time per move (s). Default: "
                          "auto-derived from our MCTS sims so SF gets a fair "
-                         "comparable budget (~mcts_sims * 0.025 s).")
+                         "comparable budget (~0.125 ms/sim, measured).")
     ap.add_argument("--depth", type=int, default=None,
                     help="Use a fixed search depth for Stockfish instead of "
                          "--movetime (more reproducible, but ignores our "
@@ -72,6 +66,9 @@ def main() -> int:
                          "Disables UCI_LimitStrength.")
     ap.add_argument("--resume", default=None,
                     help="Checkpoint (default: newest in checkpoint dir).")
+    ap.add_argument("--batch-size", type=int, default=32,
+                    help="Leaves per shared NN forward in our search "
+                         "(default 32; 0 = slow single-leaf loop).")
     ap.add_argument("--auto", action="store_true",
                     help="Adaptive ELO search: short mini-matches at varying "
                          "Stockfish strengths, narrowed via bisection until "
@@ -85,164 +82,48 @@ def main() -> int:
                     help="Upper bound for the auto-search anchor.")
     args = ap.parse_args()
 
-    if not args.stockfish or not Path(args.stockfish).exists():
-        # One last try: pick up a fresh install via the sentinel.
-        sentinel = Path(__file__).resolve().parent.parent / "runs" / ".stockfish_installed"
-        if sentinel.exists():
-            cand = sentinel.read_text(encoding="utf-8").strip()
-            if cand and cand != "FAILED" and Path(cand).exists():
-                args.stockfish = cand
-        if not args.stockfish or not Path(args.stockfish).exists():
-            print("[elo] No Stockfish binary found.")
-            print("[elo] Run once:  python tools/install_stockfish.py")
-            print("[elo] Or pass --stockfish <path-to-binary>.")
-            return 1
-
-    # Resolve to an absolute path. python-chess uses asyncio.subprocess on
-    # Windows, which fails to locate a relative path passed verbatim (the
-    # internal CreateProcess call doesn't apply CWD the way Popen does).
-    args.stockfish = str(Path(args.stockfish).resolve())
-
-    update_config_from_dict(run_probe(write=False))
-    device = torch.device(CONFIG.device)
-
-    ckpt = args.resume or latest_checkpoint(CONFIG.checkpoint_dir)
-    match_arch(CONFIG, ckpt)
-    model = build_model(CONFIG, compile_model=False).eval()
-
-    if ckpt and Path(ckpt).exists():
-        st = torch.load(ckpt, map_location=device, weights_only=True)
-        base = model._orig_mod if hasattr(model, "_orig_mod") else model
-        # Strict-load with one tolerated absence: `_material_scale` is a
-        # buffer added after the first refactor and not present in older
-        # checkpoints. Falling back to strict=False would silently swallow
-        # real architectural mismatches; explicitly whitelist only this key.
-        missing, unexpected = base.load_state_dict(st["model"], strict=False)
-        allowed_missing = {"value_head._material_scale"}
-        real_missing = [k for k in missing if k not in allowed_missing]
-        if real_missing or unexpected:
-            raise RuntimeError(
-                f"Checkpoint/model mismatch.\n  missing : {real_missing}"
-                f"\n  unexpected: {list(unexpected)}"
-            )
-        print(f"[elo] Loaded {ckpt} (step {st.get('step', '?')})")
+    sf_path = None
+    if args.stockfish and Path(args.stockfish).exists():
+        # python-chess needs an absolute path on Windows (asyncio subprocess
+        # does not resolve relative paths against CWD).
+        sf_path = str(Path(args.stockfish).resolve())
     else:
-        print("[elo] No checkpoint — measuring an UNTRAINED net.")
+        sf_path = resolve_stockfish_path(CONFIG)
+    if not sf_path:
+        print("[elo] No Stockfish binary found.")
+        print("[elo] Run once:  python tools/install_stockfish.py")
+        print("[elo] Or pass --stockfish <path-to-binary>.")
+        return 1
 
-    engine_inf = build_inference_engine(CONFIG, model, device)
+    # Shared bring-up: probe → Syzygy → checkpoint → model → engine.
+    handle = load_engine(args.resume,
+                         log=lambda m: print(m.replace("[harness]", "[elo]")))
     sims = args.sims if args.sims is not None else CONFIG.mcts_sims
 
-    sf = chess.engine.SimpleEngine.popen_uci(args.stockfish)
-
-    # Stockfish resource config — applied once. Hash + Threads matter for a
-    # fair comparison: a Stockfish on the default 16 MB hash / 1 thread is
-    # ~150-300 ELO weaker than the same binary tuned for the machine.
-    try:
-        sf.configure({"Hash": int(args.sf_hash_mb), "Threads": int(args.sf_threads)})
-    except chess.engine.EngineError as e:
-        print(f"[elo] Could not set SF Hash/Threads ({e}); using defaults.")
-
-    # Fair-play time budget: if --movetime is not given, match Stockfish's
-    # think time to our MCTS budget. MEASURED calibration on RTX 5070 with
-    # the 14M-param net + CUDA-graph batched leaves: ~0.125 ms/sim (16 ms
-    # per 128-sim move; audit/scripts/bench_mcts.json). The previous
-    # 25 ms/sim figure granted Stockfish ~200x our actual wall clock and
-    # made every estimate strongly pessimistic (audit P7-2). Floor of
-    # 50 ms keeps SF's fixed move overhead from dominating.
-    if args.movetime is None and args.depth is None:
-        n_sims_used = args.sims if args.sims is not None else CONFIG.mcts_sims
-        args.movetime = max(0.05, n_sims_used * 0.000125)
-        print(f"[elo] Auto movetime: {args.movetime:.3f}s "
-              f"(~matches our wall clock for {n_sims_used} sims).")
-
-    def _sf_limit() -> chess.engine.Limit:
-        if args.depth is not None:
-            return chess.engine.Limit(depth=int(args.depth))
-        return chess.engine.Limit(time=float(args.movetime))
-
-    def _set_sf_elo(elo: int) -> None:
-        if args.sf_skill is not None:
-            # Skill Level mode — covers the regime below the UCI_Elo floor.
-            # Stockfish must NOT be in UCI_LimitStrength mode when Skill Level
-            # drives the strength, otherwise it silently ignores the skill
-            # setting and plays at the floor's strength instead.
-            try:
-                sf.configure({"UCI_LimitStrength": False,
-                              "Skill Level": int(args.sf_skill)})
-                print(f"[elo] Stockfish Skill Level = {int(args.sf_skill)} "
-                      f"(approx. {[800,950,1100,1250,1400,1500,1600,1700,1800,1900,2000,2050,2100,2150,2200,2300,2400,2500,2700,2850,3000][max(0,min(20,int(args.sf_skill)))]} ELO).")
-            except chess.engine.EngineError as e:
-                print(f"[elo] Failed to set Skill Level: {e}")
-        else:
-            try:
-                sf.configure({"UCI_LimitStrength": True, "UCI_Elo": int(elo)})
-            except chess.engine.EngineError:
-                print(f"[elo] Stockfish rejected UCI_Elo={elo} "
-                      f"(SF floor is 1320 — use --sf-skill 0-20 for weaker "
-                      f"opponents). Using default strength.")
-
-    def _our_move(tree: MCTSTree, sims_budget: int) -> int:
-        """Run `sims_budget` simulations on the CURRENT tree root and return
-        the most-visited move (greedy, no exploration noise).
-
-        AUDIT NOTE (P7-2): --auto previously *referenced* `_our_move` without
-        any definition — the adaptive ELO search crashed with NameError on
-        its first own move, so auto-ELO never produced a result.
-        """
-        done = tree.run_batched_sims(sims_budget,
-                                     batch_size=CONFIG.parallel_games)
-        if done == 0:
-            for _ in range(sims_budget):
-                tree.run_one_simulation()
-        a = tree.root_analysis()
-        if a["top"]:
-            return a["top"][0][0]
-        return tree.select_move(0.0)[0]
-
-    def _play_batch(n: int, label: str = "") -> tuple[int, int, int]:
-        """Play `n` games alternating colours; return (W, D, L)."""
-        bw = bd = bl = 0
-        for gi in range(n):
-            we_white = (gi % 2 == 0)
-            pyb = chess.Board()
-            ob = Board.from_fen(pyb.fen())
-            tree = MCTSTree(CONFIG, model, device, engine=engine_inf)
-            tree.reset(ob)
-            while not pyb.is_game_over(claim_draw=True):
-                legal = ob.legal_moves()
-                uci_map = {_move_uci(m): m for m in legal}
-                our_turn = (pyb.turn == chess.WHITE) == we_white
-                if our_turn:
-                    move_int = _our_move(tree, sims)
-                    pyb.push(chess.Move.from_uci(_move_uci(move_int)))
-                else:
-                    res = sf.play(pyb, _sf_limit())
-                    pyb.push(res.move)
-                    move_int = uci_map.get(res.move.uci())
-                # Advance the tree (subtree + GRU-history reuse). The old
-                # per-ply `tree.reset(ob)` discarded the search tree AND
-                # truncated the GRU history to one frame every move, so the
-                # net was measured on out-of-distribution inputs (P7-2).
-                if move_int is not None:
-                    ob = ob.apply_move(move_int)
-                    tree.advance(move_int, ob)
-                else:
-                    ob = Board.from_fen(pyb.fen())
-                    tree.reset(ob, keep_history=True)
-            res = pyb.result(claim_draw=True)
-            if res == "1/2-1/2":      bd += 1
-            elif (res == "1-0") == we_white: bw += 1
-            else:                      bl += 1
-            print(f"  {label}  game {gi+1}/{n}  "
-                  f"{'W' if we_white else 'B'}  result={res}  "
-                  f"(W{bw} D{bd} L{bl})", flush=True)
-        return bw, bd, bl
+    def _match(n_games: int, *, sf_elo=None, sf_skill=None,
+               label: str = "") -> tuple[int, int, int]:
+        res = play_anchor_match(
+            handle.model, handle.device, CONFIG,
+            games=n_games, sf_elo=sf_elo, sf_skill=sf_skill,
+            sims=sims,
+            movetime=(args.movetime or 0.0),
+            sf_depth=args.depth,
+            stockfish_path=sf_path,
+            batched_bs=int(args.batch_size),
+            engine_inf=handle.engine,
+            sf_threads=int(args.sf_threads),
+            sf_hash_mb=int(args.sf_hash_mb),
+            progress=lambda d, t, w, dr, l: print(
+                f"  {label}  game {d}/{t}  (W{w} D{dr} L{l})", flush=True),
+        )
+        if res is None:
+            raise RuntimeError("Stockfish match could not start "
+                               f"(binary: {sf_path})")
+        return res["wins"], res["draws"], res["losses"]
 
     # ── Adaptive bisection search over Stockfish ELO ─────────────────
     if args.auto:
         lo, hi = args.auto_low, args.auto_high
-        # 4 rounds × budget/4 games. Each round picks the midpoint, plays
-        # a mini-match, and narrows [lo, hi] based on the score.
         rounds = 4
         per_round = max(8, args.auto_budget // rounds)
         history: list[tuple[int, int, int, int]] = []  # (anchor, W, D, L)
@@ -251,26 +132,20 @@ def main() -> int:
             print(f"\n[auto] round {r+1}/{rounds}  "
                   f"window=[{lo},{hi}]  anchor={anchor}  "
                   f"games={per_round}")
-            _set_sf_elo(anchor)
-            bw, bd, bl = _play_batch(per_round, label=f"[A{anchor}]")
+            bw, bd, bl = _match(per_round, sf_elo=anchor, label=f"[A{anchor}]")
             history.append((anchor, bw, bd, bl))
             total = bw + bd + bl
             score = (bw + 0.5 * bd) / total if total > 0 else 0.5
             print(f"[auto] round {r+1} → score={score:.2f} at anchor {anchor}")
-            # Bisection rule: if we're losing (score<0.4), lower anchor;
-            # if we're winning (score>0.6), raise anchor; if ~50%, narrow.
             if score < 0.4:
                 hi = anchor - 1
             elif score > 0.6:
                 lo = anchor + 1
             else:
-                # Already balanced — narrow further around this anchor
                 spread = max(50, (hi - lo) // 3)
                 lo, hi = anchor - spread, anchor + spread
             if hi <= lo + 50:
                 break
-
-        sf.quit()
 
         total_games = sum(h[1] + h[2] + h[3] for h in history)
         total_w = sum(h[1] for h in history)
@@ -281,10 +156,6 @@ def main() -> int:
             _, w, d, l = h
             return (w + 0.5 * d) / max(1, w + d + l)
 
-        # Find the anchor whose score lands inside a "meaningful" band —
-        # there we have signal for an ELO estimate. Outside that band the
-        # ELO model degenerates (loss-only gives diff ≈ −∞, win-only gives
-        # +∞; the Wald CI gets meaninglessly wide).
         BAND_LO, BAND_HI = 0.15, 0.85
         in_band = [h for h in history if BAND_LO <= _score(h) <= BAND_HI]
 
@@ -296,7 +167,6 @@ def main() -> int:
         print("-" * 58)
 
         if in_band:
-            # Use the anchor closest to 50 %.
             best = min(in_band, key=lambda h: abs(_score(h) - 0.5))
             anchor, bw, bd, bl = best
             diff, lo_ci, hi_ci = ELOSystem.elo_difference_ci(bw, bd, bl)
@@ -306,104 +176,42 @@ def main() -> int:
             print(f"  Estimated ELO          : {anchor + diff:.0f}  "
                   f"(CI {anchor + lo_ci:.0f}..{anchor + hi_ci:.0f})")
         else:
-            # All anchors lie outside the meaningful band → only a bound.
-            best_score_lo = min(history, key=_score)   # closest to losing all
-            best_score_hi = max(history, key=_score)   # closest to winning all
+            best_score_lo = min(history, key=_score)
+            best_score_hi = max(history, key=_score)
             if _score(best_score_hi) < BAND_LO:
-                # Lost at every anchor — model is weaker than the lowest one.
                 floor = best_score_lo[0]
                 print(f"  No anchor in [{int(BAND_LO*100)}–"
                       f"{int(BAND_HI*100)} %] score band.")
                 print(f"  Model scored ≤ {_score(best_score_hi)*100:.0f} %% "
                       f"even at the lowest tested SF anchor ({floor}).")
                 print(f"  → Estimated ELO is BELOW ~{floor}  "
-                      f"(Stockfish's UCI floor is 1320, so we cannot probe "
-                      f"lower without external rating systems).")
+                      f"(Stockfish's UCI floor is 1320 — probe lower with "
+                      f"--sf-skill 0-3 fixed matches).")
                 print(f"  Hints: increase --sims, lower --movetime, or train "
                       f"the net further before re-measuring.")
             elif _score(best_score_lo) > BAND_HI:
-                # Won at every anchor — model is stronger than the highest.
                 ceiling = best_score_hi[0]
                 print(f"  Won at every tested anchor (top {ceiling}).")
                 print(f"  → Estimated ELO is ABOVE ~{ceiling}. Re-run with "
                       f"--auto-low {ceiling + 100} to refine.")
             else:
-                # Crossed the band but never landed in it — degenerate.
                 print("  Search did not converge — anchors flipped between "
                       "≤15% and ≥85% with no balanced match. Try a denser "
                       "search by raising --auto-budget.")
         print("=" * 58)
         return 0
 
-    # ── Single fixed-anchor match (legacy path) ──────────────────────
-    _set_sf_elo(args.elo)
-
-    wins = draws = losses = 0
-    for g in range(args.games):
-        we_white = (g % 2 == 0)
-        pyb = chess.Board()
-        ob = Board.from_fen(pyb.fen())
-        tree = MCTSTree(CONFIG, model, device, engine=engine_inf)
-        tree.reset(ob)
-
-        while not pyb.is_game_over(claim_draw=True):
-            # Map legal moves to their UCI strings to bridge between engines
-            legal = ob.legal_moves()
-            uci_map = {_move_uci(m): m for m in legal}
-
-            our_turn = (pyb.turn == chess.WHITE) == we_white
-            if our_turn:
-                # Search with tree recycling: manually run simulations instead
-                # of tree.search() to avoid the internal reset().
-                for _ in range(sims):
-                    tree.run_one_simulation()
-
-                # Greedy selection (near-zero temperature)
-                a = tree.root_analysis()
-                move_int = a["top"][0][0] if a["top"] else tree.select_move(0.01)[0]
-                uci = _move_uci(move_int)
-                pyb.push(chess.Move.from_uci(uci))
-            else:
-                # Stockfish move
-                res = sf.play(pyb, chess.engine.Limit(time=args.movetime))
-                uci = res.move.uci()
-                pyb.push(res.move)
-                move_int = uci_map.get(uci)
-
-            if move_int is not None:
-                ob = ob.apply_move(move_int)
-                tree.advance(move_int, ob)
-            else:
-                # Fallback if moves don't align (should not happen)
-                ob = Board.from_fen(pyb.fen())
-                tree.reset(ob, keep_history=True)
-
-        res = pyb.result(claim_draw=True)  # "1-0","0-1","1/2-1/2"
-        if res == "1/2-1/2":
-            draws += 1
-        elif (res == "1-0") == we_white:
-            wins += 1
-        else:
-            losses += 1
-        print(f"  game {g+1}/{args.games}  "
-              f"{'W' if we_white else 'B'}  result={res}  "
-              f"(W{wins} D{draws} L{losses})", flush=True)
-
-    sf.quit()
+    # ── Single fixed-anchor match ─────────────────────────────────────
+    if args.sf_skill is not None:
+        wins, draws, losses = _match(args.games, sf_skill=int(args.sf_skill))
+        anchor = SKILL_ELO[max(0, min(20, int(args.sf_skill)))]
+        label = f"Stockfish skill {int(args.sf_skill)} (≈{anchor})"
+    else:
+        wins, draws, losses = _match(args.games, sf_elo=int(args.elo))
+        anchor = args.elo
+        label = f"Stockfish@{args.elo}"
 
     diff, lo, hi = ELOSystem.elo_difference_ci(wins, draws, losses)
-    # In --sf-skill mode the opponent's strength is the skill level's
-    # approximate ELO, NOT args.elo (whose 1500 default previously leaked
-    # into the summary and inflated "Estimated ELO" by hundreds of points).
-    _SKILL_ELO = [800, 950, 1100, 1250, 1400, 1500, 1600, 1700, 1800, 1900,
-                  2000, 2050, 2100, 2150, 2200, 2300, 2400, 2500, 2700,
-                  2850, 3000]
-    if args.sf_skill is not None:
-        anchor = _SKILL_ELO[max(0, min(20, int(args.sf_skill)))]
-        label  = f"Stockfish skill {int(args.sf_skill)} (≈{anchor})"
-    else:
-        anchor = args.elo
-        label  = f"Stockfish@{args.elo}"
     print("\n" + "=" * 52)
     print(f"  vs {label}  ({args.games} games, {sims} sims)")
     print(f"  W{wins} D{draws} L{losses}")

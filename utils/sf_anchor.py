@@ -60,6 +60,7 @@ def play_anchor_match(
     sf_elo: Optional[int] = None,
     sims: int = 0,
     movetime: float = 0.0,
+    sf_depth: Optional[int] = None,
     stockfish_path: Optional[str] = None,
     batched_bs: int = 32,
     engine_inf=None,
@@ -80,6 +81,8 @@ def play_anchor_match(
     movetime: SF think time per move in seconds (0 → fair-time auto:
               max(0.05, sims * 0.000125), the measured ~0.125 ms/sim of the
               batched search — audit P7-2 calibration).
+    sf_depth: fixed SF search depth instead of movetime (more
+              reproducible; ignores wall-clock fairness).
     batched_bs: leaves per shared NN forward (run_batched_sims); 0 = the
               slow single-leaf loop.
     engine_inf: optional shared inference engine (else each game's tree
@@ -171,7 +174,10 @@ def play_anchor_match(
                         break  # degenerate root — referee scores it below
                     pyb.push(chess.Move.from_uci(_move_uci(move_int)))
                 else:
-                    res = sf.play(pyb, chess.engine.Limit(time=float(movetime)))
+                    limit = (chess.engine.Limit(depth=int(sf_depth))
+                             if sf_depth is not None
+                             else chess.engine.Limit(time=float(movetime)))
+                    res = sf.play(pyb, limit)
                     pyb.push(res.move)
                     move_int = uci_map.get(res.move.uci())
 
