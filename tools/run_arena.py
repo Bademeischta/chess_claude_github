@@ -48,18 +48,9 @@ from config import CONFIG, update_config_from_dict
 from utils.system_probe import run_probe
 from utils.ckpt_arch import latest_checkpoint, match_arch
 from model.network import build_model
+from engine.harness import load_state_into
 from training.pbt import OpponentPool
 from training.trainer import Trainer
-
-
-def _load_into(model: torch.nn.Module, path: str, device: torch.device) -> None:
-    """Load weights from a checkpoint that is either a full trainer checkpoint
-    ({'model': state_dict, ...}) or a raw state_dict (pool entries)."""
-    st = torch.load(path, map_location=device, weights_only=True)
-    state = st["model"] if isinstance(st, dict) and "model" in st else st
-    base = model._orig_mod if hasattr(model, "_orig_mod") else model
-    base.load_state_dict(state, strict=True)
-    model.eval()
 
 
 def _implied_elo(wins: int, draws: int, losses: int) -> float | None:
@@ -124,9 +115,9 @@ def main() -> int:
     # ── Build the two nets ───────────────────────────────────────────────
     match_arch(CONFIG, current_path)
     current = build_model(CONFIG, compile_model=False).eval()
-    _load_into(current, current_path, device)
+    load_state_into(current, current_path, device)   # shared allowlist policy
     opponent = build_model(CONFIG, compile_model=False).eval()
-    _load_into(opponent, opp_path, device)
+    load_state_into(opponent, opp_path, device)
 
     # ── Minimal Trainer shell (run_arena only needs cfg + device) ────────
     trainer = Trainer.__new__(Trainer)

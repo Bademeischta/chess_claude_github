@@ -69,22 +69,25 @@ def init_syzygy(cfg=CONFIG, repo_root: Optional[Path] = None) -> bool:
 
 def load_state_into(model: torch.nn.Module, ckpt: str,
                     device: torch.device) -> Optional[int]:
-    """Load a checkpoint's model weights; return its training step.
+    """Load a checkpoint's model weights; return its training step (if any).
 
-    Uniform strictness policy: strict=False load, then verify that nothing
-    beyond the known-benign allowlist is missing/unexpected (the audited
-    policy from elo_vs_stockfish; uci_engine's strict=True broke on old
-    checkpoints, web_gui's bare strict=False hid real mismatches)."""
+    Accepts both full trainer checkpoints ({'model': state_dict, ...}) and
+    raw state_dicts (opponent-pool entries). Uniform strictness policy:
+    strict=False load, then verify that nothing beyond the known-benign
+    allowlist is missing/unexpected (the audited policy from
+    elo_vs_stockfish; uci_engine's strict=True broke on old checkpoints,
+    web_gui's bare strict=False hid real mismatches)."""
     st = torch.load(ckpt, map_location=device, weights_only=True)
+    state = st["model"] if isinstance(st, dict) and "model" in st else st
     base = model._orig_mod if hasattr(model, "_orig_mod") else model
-    missing, unexpected = base.load_state_dict(st["model"], strict=False)
+    missing, unexpected = base.load_state_dict(state, strict=False)
     real_missing = [k for k in missing if k not in _ALLOWED_MISSING]
     if real_missing or unexpected:
         raise RuntimeError(
             f"Checkpoint/model mismatch for {ckpt}.\n"
             f"  missing   : {real_missing}\n"
             f"  unexpected: {list(unexpected)}")
-    step = st.get("step")
+    step = st.get("step") if isinstance(st, dict) else None
     return int(step) if step is not None else None
 
 
