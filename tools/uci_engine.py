@@ -33,7 +33,7 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from config import CONFIG
-from engine.harness import load_engine, time_budget_s
+from engine.harness import load_engine, run_search, time_budget_s
 from engine.board import Board, STARTPOS_FEN
 from engine.rules import get_game_result, GameResult
 from engine.movegen import _move_uci
@@ -124,22 +124,24 @@ class UCIEngine:
         tree = MCTSTree(self.cfg, self.model, self.device, engine=self.engine)
         tree.begin_search(self.board, add_noise=False)  # no exploration noise
 
+        # Batched search (audit 2026-07-15, plan C1): the previous loop ran
+        # run_one_simulation() leaf-by-leaf — one full GPU forward per sim,
+        # ~125 nps measured. The shared driver collects `batch` leaves per
+        # forward (virtual loss diversifies the paths), the same path the
+        # web GUI and self-play use, so GUI games finally play at the
+        # model's real strength per second. stop/deadline stay responsive
+        # at one-round latency.
         t0 = time.time()
-        n = 0
-        last_info = 0.0
-        while True:
-            if self._stop.is_set():
-                break
-            if sims_target is not None and n >= sims_target:
-                break
-            if deadline is not None and time.time() >= deadline:
-                break
-            tree.run_one_simulation()
-            n += 1
-            now = time.time()
-            if now - last_info >= 0.3:
-                self._emit_info(tree, n, now - t0)
-                last_info = now
+        batch = int(getattr(self.engine, "batch_size", 0)) or 32
+        n = run_search(
+            tree,
+            sims=sims_target,
+            deadline=deadline,
+            stop=self._stop,
+            batch_size=batch,
+            info_cb=lambda done: self._emit_info(
+                tree, done, max(1e-3, time.time() - t0)),
+        )
 
         self._emit_info(tree, n, max(1e-3, time.time() - t0))
         a = tree.root_analysis()
