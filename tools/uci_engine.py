@@ -212,6 +212,21 @@ def main() -> int:
     try:
         update_config_from_dict(run_probe(write=False))
         device = torch.device(CONFIG.device)
+
+        # Tablebases — same auto-detect as main.py. Without this the UCI
+        # engine (LucasChess / chess.com relay games) searched WITHOUT
+        # Syzygy even though training had it, so it could trade into
+        # tablebase-lost ≤5-man endgames it had no way to evaluate.
+        from engine.rules import init_tablebase
+        if not CONFIG.syzygy_path:
+            _auto_tb = _root / "syzygy"
+            if _auto_tb.is_dir() and any(_auto_tb.glob("*.rtbw")):
+                CONFIG.syzygy_path = str(_auto_tb)
+        if CONFIG.syzygy_path:
+            ok = init_tablebase(CONFIG.syzygy_path)
+            print(f"[uci] Syzygy tablebases: "
+                  f"{'loaded' if ok else 'not found'}")   # goes to stderr here
+
         ckpt = args.resume or latest_checkpoint(CONFIG.checkpoint_dir)
         match_arch(CONFIG, ckpt)
         model = build_model(CONFIG, compile_model=False).eval()

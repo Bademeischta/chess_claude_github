@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote_plus
 from pathlib import Path
 from typing import Optional
 
@@ -1030,6 +1031,35 @@ def _threat_map(board) -> dict:
     }
 
 
+def _policy_for_fen(session: "GameSession", fen: str) -> dict:
+    """Return neural-network policy priors for all legal moves in the
+    current position (no MCTS — just the root forward pass).
+
+    The root is already expanded while it is the human's turn (ponder runs
+    continuously), so this is usually a zero-cost read of cached priors.
+    Falls back to a single expansion pass if the tree hasn't been touched."""
+    with session._lock:
+        if session.board is None or session.tree is None:
+            return {"error": "no game"}
+    # Idempotent: only triggers a forward pass when root not yet expanded.
+    session._ensure_root_ready()
+    try:
+        a = session.tree.root_analysis(top_k=500, pv_len=1)
+    except Exception:
+        a = {}
+    ext = a.get("ext", [])
+    if not ext:
+        top = a.get("top", [])
+        ext = [{"move": m, "p": 1.0 / max(1, len(top))} for m, _n, _q in top]
+    total = sum(float(e.get("p", 0)) for e in ext)
+    policy: dict = {}
+    for e in ext:
+        uci = _move_uci(e["move"])
+        p = float(e.get("p", 0))
+        policy[uci] = p / total if total > 0 else 0.0
+    return {"policy": policy, "value": float(a.get("value", 0.0))}
+
+
 _EA_CACHE: dict = {"path": None, "ea": None}
 _EA_LOCK = threading.Lock()
 
@@ -1132,21 +1162,23 @@ def _training_snapshot() -> dict:
 SESSION: Optional[GameSession] = None  # set in main()
 
 
-# Piece glyphs — kept as-is from the original (CDN doesn't ship them).
-_GLYPH = {"K": "♚", "Q": "♛", "R": "♜",
-          "B": "♝", "N": "♞", "P": "♟"}
+# White pieces: outlined/hollow glyphs U+2654–2659 (♔♕♖♗♘♙)
+# Black pieces: solid/filled glyphs  U+265A–265F (♚♛♜♝♞♟)
+_GLYPH_W = {"K": "♔", "Q": "♕", "R": "♖", "B": "♗", "N": "♘", "P": "♙"}
+_GLYPH_B = {"K": "♚", "Q": "♛", "R": "♜", "B": "♝", "N": "♞", "P": "♟"}
 _PIECE_CACHE: dict = {}
 
 
 def _piece_svg(code: str):
     if code in _PIECE_CACHE:
         return _PIECE_CACHE[code]
-    if len(code) != 2 or code[0] not in "wb" or code[1] not in _GLYPH:
+    if len(code) != 2 or code[0] not in "wb" or code[1] not in _GLYPH_W:
         return None
-    glyph = _GLYPH[code[1]]
     if code[0] == "w":
+        glyph = _GLYPH_W[code[1]]
         fill, stroke = "#fafafa", "#202020"
     else:
+        glyph = _GLYPH_B[code[1]]
         fill, stroke = "#1a1a1a", "#e8e8e8"
     svg = (
         f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 45 45'>"
@@ -1236,6 +1268,14 @@ class Handler(BaseHTTPRequestHandler):
             with SESSION._lock:
                 board = SESSION.board
             self._send_json(200, _threat_map(board) if board else {})
+            return
+        if self.path.startswith("/api/policy"):
+            fen = ""
+            if "?" in self.path:
+                for part in self.path.split("?", 1)[1].split("&"):
+                    if part.startswith("fen="):
+                        fen = unquote_plus(part[4:])
+            self._send_json(200, _policy_for_fen(SESSION, fen))
             return
         self._send(404, b"not found", "text/plain")
 
@@ -1594,6 +1634,22 @@ PAGE = r"""<!doctype html>
   .gs-row .cell .lbl{font-size:10px;color:var(--ink-fade);text-transform:uppercase;letter-spacing:.1em}
   #guessNow{margin-top:8px;font-size:12px;color:var(--ink-dim);min-height:18px}
   .gsq{box-shadow:inset 0 0 0 4px rgba(255,180,84,.8) !important}
+
+  /* ── Click-to-move & policy heatmap ─────────────────────────────── */
+  #clickLayer{position:absolute;left:0;top:0;width:100%;height:100%;
+              pointer-events:none;z-index:6}
+  .click-sq{position:absolute;width:12.5%;height:12.5%;box-sizing:border-box;
+            pointer-events:none;display:flex;align-items:center;justify-content:center}
+  .click-sq.sel{background:rgba(255,214,10,.42);
+                box-shadow:inset 0 0 0 3px rgba(255,180,0,.85)}
+  .click-sq.leg::before{content:'';width:32%;height:32%;border-radius:50%;
+                        background:rgba(61,220,151,.70);flex-shrink:0}
+  .click-sq.leg.cap{background:rgba(255,80,80,.22);
+                    box-shadow:inset 0 0 0 3px rgba(255,80,80,.65)}
+  .click-sq.leg.cap::before{display:none}
+  .click-sq.pol{align-items:flex-end;justify-content:flex-end;padding:2px 3px}
+  .click-pct{font-size:9px;font-weight:800;color:#fff;line-height:1;
+             text-shadow:0 0 4px rgba(0,0,0,1),0 0 2px rgba(0,0,0,1)}
 </style>
 </head><body>
 
@@ -1614,6 +1670,7 @@ PAGE = r"""<!doctype html>
       <div class="board-stage">
         <div id="board"></div>
         <svg class="arrows" id="arrows" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+        <div id="clickLayer"></div>
       </div>
 
       <div class="evalrow" style="width:min(72vh,560px);max-width:100%">
@@ -1787,6 +1844,7 @@ let game = new Chess(), board = null, busy = false;
 let lastMoveSquares = [];
 let humanWhite = true;
 let gameOver = false;
+let selectedSq = null, legalTargets = [], clickPolicy = {};
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 async function post(u, d){
@@ -1947,6 +2005,92 @@ function fmtMoveSan(uci){
   return mv ? mv.san : uci;
 }
 
+// ─── Click-to-move & policy heatmap ────────────────────────────────────
+function clearClickSelection(){
+  selectedSq=null; legalTargets=[]; clickPolicy={};
+  let ly=document.getElementById('clickLayer'); if(ly) ly.innerHTML='';
+}
+function _sqBox(sq){
+  let c=squareCenter(sq); if(!c) return null;
+  return {l:(c.x-6.25).toFixed(2), t:(c.y-6.25).toFixed(2)};
+}
+function renderClickLayer(){
+  let ly=document.getElementById('clickLayer'); if(!ly) return;
+  ly.innerHTML='';
+  if(!selectedSq) return;
+  // Selected-piece highlight
+  let sb=_sqBox(selectedSq);
+  if(sb){
+    let d=document.createElement('div');
+    d.className='click-sq sel';
+    d.style.left=sb.l+'%'; d.style.top=sb.t+'%'; ly.appendChild(d);
+  }
+  // Legal target squares
+  legalTargets.forEach(to=>{
+    let b=_sqBox(to); if(!b) return;
+    let p=clickPolicy[to]; let cap=!!game.get(to);
+    let d=document.createElement('div');
+    d.className='click-sq leg'+(cap?' cap':'')+(p!==undefined?' pol':'');
+    d.style.left=b.l+'%'; d.style.top=b.t+'%';
+    if(p!==undefined){
+      // Policy heatmap: pale green → strong orange as probability rises
+      let alpha=Math.max(0.14,Math.min(0.72,p));
+      let hue=p<0.20?120:p<0.50?75:35;
+      d.style.background='hsla('+hue+',85%,52%,'+alpha.toFixed(2)+')';
+      let s=document.createElement('span'); s.className='click-pct';
+      s.textContent=Math.round(p*100)+'%'; d.appendChild(s);
+    }
+    ly.appendChild(d);
+  });
+}
+async function fetchPolicy(){
+  let fen=game.fen(), src=selectedSq;
+  try{
+    let r=await fetch('/api/policy?fen='+encodeURIComponent(fen));
+    let d=await r.json();
+    if(!d.policy||selectedSq!==src) return;   // selection changed while awaiting
+    // Aggregate by to-square (handles promotions: e7e8q + e7e8r + … → one dot)
+    let toMap={}, total=0;
+    legalTargets.forEach(to=>{toMap[to]=0;});
+    for(let [uci,p] of Object.entries(d.policy)){
+      let from=uci.slice(0,2), to=uci.slice(2,4);
+      if(from===src && to in toMap){ toMap[to]+=p; total+=p; }
+    }
+    if(total>0){
+      clickPolicy={};
+      for(let [to,p] of Object.entries(toMap)) clickPolicy[to]=p/total;
+    }
+  }catch(e){}
+  if(selectedSq===src) renderClickLayer();
+}
+function selectSquare(sq){
+  clearClickSelection(); selectedSq=sq;
+  let mvs=game.moves({square:sq,verbose:true});
+  legalTargets=[...new Set(mvs.map(m=>m.to))];
+  renderClickLayer(); fetchPolicy();
+}
+function onSquareClickCB(sq,piece){
+  if(busy||gameOver) return;
+  let myColor=humanWhite?'w':'b';
+  let myTurn=game.turn()===myColor;
+  let isOwn=piece&&piece[0]===myColor;
+  if(selectedSq===null){ if(isOwn&&myTurn) selectSquare(sq); return; }
+  if(sq===selectedSq){ clearClickSelection(); return; }
+  if(isOwn&&myTurn){ selectSquare(sq); return; }
+  if(legalTargets.includes(sq)){
+    // promotion always defaults to queen (same behaviour as drag-and-drop)
+    let mv=game.move({from:selectedSq,to:sq,promotion:'q'});
+    if(mv){
+      let uci=mv.from+mv.to+(mv.promotion||'');
+      busy=true; highlightLastMove(uci); clearClickSelection();
+      post('/api/move',{uci:uci}).then(res=>{
+        if(res&&res.error){game.undo();board.position(game.fen());
+          setLive('','illegal: '+res.error);busy=false;}
+      });
+    } else clearClickSelection();
+  } else clearClickSelection();
+}
+
 // ─── Board ─────────────────────────────────────────────────────────────
 function highlightLastMove(uci){
   // Remove previous highlights
@@ -1973,6 +2117,7 @@ function highlightHint(uci){
 
 function onDrop(src, tgt){
   if (busy || gameOver) return 'snapback';
+  clearClickSelection();
   // Whose turn from chess.js's view?
   let turn = game.turn();   // 'w' or 'b'
   let ourTurn = (humanWhite && turn === 'w') || (!humanWhite && turn === 'b');
@@ -2031,6 +2176,7 @@ function applySnapshot(d){
 function onNewGame(d){
   humanWhite = d.human_white;
   gameOver = false;
+  clearClickSelection();
   game.load(d.fen);
   board.orientation(humanWhite ? 'white' : 'black');
   board.position(d.fen, false);
@@ -2089,6 +2235,7 @@ function onAIProgress(d){
   if (d.position) renderPosition(d.position);
 }
 function onAIMove(d){
+  clearClickSelection();
   game.load(d.fen);
   board.position(d.fen, true);
   highlightLastMove(d.uci);
@@ -2130,6 +2277,7 @@ function onPonderUpdate(d){
   if (d.position) renderPosition(d.position);
 }
 function onTakeback(d){
+  clearClickSelection();
   game.load(d.fen);
   board.position(d.fen, true);
   renderHistory(d.history);
@@ -2440,6 +2588,81 @@ board = Chessboard('board', {
   pieceTheme: '/piece/{piece}.svg',
 });
 
+// chessboard.js 1.0.0 has NO `onSquareClick` option — the one that used to be
+// passed here was silently ignored, so point-and-click never fired and only
+// drag worked. Wire it ourselves with a single DELEGATED click listener on the
+// stable #board container: it survives chessboard.js re-creating its cells on
+// every position() call, and clicks pass through the pointer-events:none
+// #clickLayer / #arrows overlays to the square beneath. We translate the
+// clicked cell's data-square + chess.js piece into the (square, 'wP'-style
+// code) arguments onSquareClickCB already expects, so click and drag share all
+// downstream move logic. A genuine drag is ignored here because onDrop sets
+// busy=true (and flips the turn) before the trailing click bubbles up.
+(function(){
+  const host = document.getElementById('board');
+  if (!host) return;
+
+  // Resolve a viewport point to a board square. Uses elementsFromPoint
+  // (the full hit stack) rather than elementFromPoint: when you click a
+  // piece, chessboard.js has already started a drag and its floating piece
+  // clone — appended to <body>, not to a square — sits directly under the
+  // cursor. The PLURAL variant lets us skip that clone (and any overlay)
+  // and find the real square cell beneath. Restricted to cells inside
+  // #board so clicks on other UI never resolve to a square.
+  function squareAt(x, y){
+    for (const el of document.elementsFromPoint(x, y)){
+      const cell = el.closest ? el.closest('[data-square]') : null;
+      if (cell && host.contains(cell)) return cell.getAttribute('data-square');
+    }
+    return null;
+  }
+  function tapSquare(sq){
+    if (!sq) return;
+    const pc = game.get(sq);                                     // {type,color}|null
+    onSquareClickCB(sq, pc ? (pc.color + pc.type.toUpperCase()) : null); // 'wP'|null
+  }
+
+  // Touch (iPad / phone): iOS does NOT reliably fire `click` on plain <div>
+  // squares, and chessboard.js drag needs a mouse — so a `click`-only handler
+  // does nothing on touch. Detect a TAP (touchstart+touchend on ~the same
+  // point; a larger move is a drag/scroll, left alone) and route it through the
+  // same handler. `touchTap` then swallows the ghost `click` iOS synthesises
+  // ~300 ms later so the tap isn't processed twice.
+  let tStart = null, touchTap = false;
+  document.addEventListener('touchstart', ev => {
+    const t = ev.touches[0]; if (t) tStart = {x: t.clientX, y: t.clientY};
+  }, {passive: true});
+  document.addEventListener('touchend', ev => {
+    const t = ev.changedTouches && ev.changedTouches[0];
+    if (!t || !tStart) { tStart = null; return; }
+    const moved = Math.abs(t.clientX - tStart.x) > 14 ||
+                  Math.abs(t.clientY - tStart.y) > 14;
+    tStart = null;
+    if (moved) return;                        // swipe / drag, not a tap
+    touchTap = true; setTimeout(() => { touchTap = false; }, 500);
+    tapSquare(squareAt(t.clientX, t.clientY));
+  }, {passive: true});
+
+  // Mouse (desktop): the listener MUST live on document, not #board.
+  // Clicking a piece makes chessboard.js start a drag on mousedown and
+  // reparent the pointer under its floating clone on <body>; the resulting
+  // click event then fires on the common ancestor — BODY — and never
+  // bubbles through #board (verified via event logging: "click -> BODY").
+  // squareAt() keeps this safe: coordinates that don't sit over a board
+  // square resolve to null, so page-wide clicks are untouched. Skipped
+  // right after a touch so iOS's synthetic click doesn't double-fire.
+  document.addEventListener('click', ev => {
+    if (touchTap) return;
+    tapSquare(squareAt(ev.clientX, ev.clientY));
+  });
+
+  // Escape clears the current selection (spec: empty square OR Esc deselects;
+  // the empty-square case is already handled inside onSquareClickCB).
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && selectedSq) clearClickSelection();
+  });
+})();
+
 // Fetch engine info for the pill
 fetch('/api/state').then(r => r.json()).then(s => {
   document.getElementById('enginepill').textContent = 'engine: ready';
@@ -2701,7 +2924,7 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
       '[White "'+(humanWhite?'You':'ChessAI')+'"]\n[Black "'+(humanWhite?'ChessAI':'You')+'"]\n\n'; }
 
   // ── Board controls ───────────────────────────────────────────────────
-  function flip(){ if(board) board.flip(); setTimeout(refreshThreats,60); }
+  function flip(){ if(board) board.flip(); clearClickSelection(); setTimeout(refreshThreats,60); }
   function toggleCoords(){ document.body.classList.toggle('no-coords');
     LS.setItem('pp_coords', document.body.classList.contains('no-coords')?'0':'1'); }
   function toggleFocus(){ document.body.classList.toggle('focusmode');
@@ -2814,7 +3037,8 @@ window.addEventListener('resize', () => { if (board) board.resize(); });
     const k=e.key;
     if(k==='ArrowLeft'){ reviewStep(-1); e.preventDefault(); }
     else if(k==='ArrowRight'){ reviewStep(1); e.preventDefault(); }
-    else if(k==='Escape'){ if(help.classList.contains('show')) help.classList.remove('show');
+    else if(k==='Escape'){ clearClickSelection();
+      if(help.classList.contains('show')) help.classList.remove('show');
       else if(reviewPly!=null) reviewLive(); }
     else if(k==='?'||(k==='/'&&e.shiftKey)) help.classList.toggle('show');
     else if(k==='f'||k==='F') flip();
@@ -3014,6 +3238,20 @@ def main() -> int:
 
     update_config_from_dict(run_probe(write=False))
     device = torch.device(CONFIG.device)
+
+    # Tablebases — same auto-detect as main.py. Until now only TRAINING loaded
+    # Syzygy; play (web GUI / UCI) searched without it, so the net could trade
+    # queens into a tablebase-lost K+P endgame it had no way to evaluate
+    # (observed in a real game: 55.Qxf3?? gxf3 → 5-man loss the TB scores
+    # perfectly). With this, MCTS leaf resolution probes the TB during play too.
+    from engine.rules import init_tablebase
+    if not CONFIG.syzygy_path:
+        _auto_tb = _root / "syzygy"
+        if _auto_tb.is_dir() and any(_auto_tb.glob("*.rtbw")):
+            CONFIG.syzygy_path = str(_auto_tb)
+    if CONFIG.syzygy_path:
+        ok = init_tablebase(CONFIG.syzygy_path)
+        print(f"[web] Syzygy tablebases: {'loaded' if ok else 'not found'}")
 
     from utils.ckpt_arch import latest_checkpoint, match_arch
     ckpt = args.resume or latest_checkpoint(CONFIG.checkpoint_dir)
