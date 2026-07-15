@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chess AI — play & analyse</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head><body>
+
+<div class="wrap">
+
+  <!-- LEFT COLUMN — board + history -->
+  <div class="left">
+
+    <header>
+      <h1>♚ Chess AI</h1>
+      <div>
+        <span class="pill" id="enginepill">engine: loading…</span>
+        <span class="pill" id="livepill"><span class="dot" id="livedot"></span><span id="livetxt">connecting</span></span>
+      </div>
+    </header>
+
+    <div class="card board-wrap">
+      <div class="board-stage">
+        <div id="board"></div>
+        <svg class="arrows" id="arrows" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+        <div id="clickLayer"></div>
+      </div>
+
+      <div class="evalrow" style="width:min(72vh,560px);max-width:100%">
+        <div class="evalbar"><div id="evalfill" class="evalfill"></div></div>
+        <div class="evalnum" id="evalnum">+0.00</div>
+      </div>
+      <div style="width:min(72vh,560px);max-width:100%">
+        <div class="wdlbar" id="wdlbar" title="Win / Draw / Loss probability from the net's value head (side-to-move POV)">
+          <div class="wdl-w" id="wdl-w" style="width:33%"></div>
+          <div class="wdl-d" id="wdl-d" style="width:34%"></div>
+          <div class="wdl-l" id="wdl-l" style="width:33%"></div>
+        </div>
+        <div class="wdllbl">
+          <span>Win <b id="wdl-wt">—</b></span>
+          <span>Draw <b id="wdl-dt">—</b></span>
+          <span>Loss <b id="wdl-lt">—</b></span>
+        </div>
+      </div>
+      <div class="evalrow" style="width:min(72vh,560px);max-width:100%;gap:6px">
+        <span class="matchip" id="matchip">Material: even</span>
+        <span class="confchip" id="confchip">confidence —</span>
+        <span style="flex:1"></span>
+        <span style="font-size:11px;color:var(--ink-fade)" id="movecount">move 0</span>
+      </div>
+
+      <div class="btnrow" style="margin-top:4px">
+        <button class="primary" onclick="newGame(true)">New game (you=White)</button>
+        <button onclick="newGame(false)">You=Black</button>
+        <button onclick="takeback()">↶ Take back</button>
+        <button onclick="hint()">💡 Hint</button>
+        <button class="danger" onclick="resign()">Resign</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Move history</h3>
+      <div class="history" id="history"></div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT COLUMN — AI brain + settings -->
+  <div class="right">
+
+    <div class="card">
+      <h3>AI commentary on your last move</h3>
+      <div id="commentary"><div class="lead">No moves yet</div><div>Play a move and I'll tell you what I think of it.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>AI is thinking <span class="pill" id="thinkmode" style="float:right">—</span></h3>
+      <div class="progress"><div id="progressfill" class="progress-fill"></div></div>
+      <div class="progress-label">
+        <span id="progresstxt">idle</span>
+        <span id="nodes"></span>
+      </div>
+      <div class="converge" id="converge"></div>
+    </div>
+
+    <div class="card">
+      <h3>Top candidate moves <span style="float:right;color:var(--ink-fade);font-size:10px">click a row for its line</span></h3>
+      <table class="moves"><thead><tr>
+        <th>#</th><th>Move</th><th class="num">Visits</th>
+        <th class="num">Prior</th><th class="num">Q</th><th>Share</th>
+      </tr></thead><tbody id="topmoves"><tr><td colspan="6" style="color:var(--ink-dim);text-align:center;padding:18px">no analysis yet</td></tr></tbody></table>
+    </div>
+
+    <div class="card">
+      <h3>Position insight</h3>
+      <div class="pi-row" id="pi-meta">
+        <span class="pi-chip">Material <b id="pi-mat">—</b></span>
+        <span class="pi-chip">Phase <b id="pi-phase">—</b></span>
+        <span class="pi-chip" title="The value head's learnable material-balance signal (side-to-move POV)">Material-sense <b id="pi-aux">—</b></span>
+      </div>
+      <div class="pi-sec">Tactics on the board (heuristic, not from the net)</div>
+      <div class="tac" id="pi-tac"><span style="color:var(--ink-fade);border:none;background:none">—</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Principal variation</h3>
+      <div class="pv" id="pv"><span style="color:var(--ink-dim);background:transparent;border:none">—</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Eval over game <span style="float:right;color:var(--ink-fade);font-size:10px">side-to-move POV per move</span></h3>
+      <svg id="evalchart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="card">
+      <h3>AI settings <span style="float:right;color:var(--ink-fade);font-size:10px">applied live</span></h3>
+
+      <label class="field" style="margin-bottom:10px">
+        <span>Thinking mode</span>
+        <select id="thinkMode" onchange="settingChanged()">
+          <option value="sims">Fixed sims (precise)</option>
+          <option value="time">Time budget (consistent feel)</option>
+          <option value="dynamic">Dynamic (AI decides)</option>
+        </select>
+      </label>
+
+      <div id="sims-row" class="grid2" style="margin-bottom:10px">
+        <label class="field">
+          <span>Sims per move</span>
+          <input type="number" id="thinkSims" min="20" max="10000" step="10" value="400" onchange="settingChanged()">
+        </label>
+        <label class="field">
+          <span>(more = stronger, slower)</span>
+          <input type="range" id="thinkSimsR" min="20" max="3000" step="20" value="400"
+                 oninput="document.getElementById('thinkSims').value=this.value;settingChanged()">
+        </label>
+      </div>
+
+      <div id="time-row" class="grid2" style="margin-bottom:10px;display:none">
+        <label class="field">
+          <span>Time (seconds)</span>
+          <input type="number" id="thinkTime" min="0.5" max="120" step="0.5" value="5" onchange="settingChanged()">
+        </label>
+        <label class="field">
+          <span>(real-time cap)</span>
+          <input type="range" id="thinkTimeR" min="0.5" max="60" step="0.5" value="5"
+                 oninput="document.getElementById('thinkTime').value=this.value;settingChanged()">
+        </label>
+      </div>
+
+      <div id="dyn-row" class="grid2" style="margin-bottom:10px;display:none">
+        <label class="field">
+          <span>Dynamic min sims</span>
+          <input type="number" id="dynMin" min="20" max="5000" step="10" value="200" onchange="settingChanged()">
+        </label>
+        <label class="field">
+          <span>Dynamic max sims</span>
+          <input type="number" id="dynMax" min="50" max="20000" step="50" value="1600" onchange="settingChanged()">
+        </label>
+      </div>
+
+      <div class="grid2" style="margin-bottom:10px">
+        <label class="toggle">
+          <input type="checkbox" id="ponderOn" checked onchange="settingChanged()">
+          <span>Ponder (keep thinking on your turn)</span>
+        </label>
+      </div>
+
+      <label class="field" style="margin-bottom:4px">
+        <span>Temperature: <span id="tempLbl">0.05</span> (lower = stricter best-move)</span>
+        <input type="range" id="temperature" min="0.001" max="1" step="0.001" value="0.05"
+               oninput="document.getElementById('tempLbl').textContent=parseFloat(this.value).toFixed(3);settingChanged()">
+      </label>
+
+      <label class="field" style="margin-bottom:4px">
+        <span>Contempt: <span id="contemptLbl">0.10</span> (anti-draw bias — higher = fights harder, avoids shuffle-to-3fold)</span>
+        <input type="range" id="contempt" min="0" max="0.30" step="0.01" value="0.10"
+               oninput="document.getElementById('contemptLbl').textContent=parseFloat(this.value).toFixed(2);settingChanged()">
+      </label>
+    </div>
+
+    <div class="status">
+      <span><span class="dot" id="ponderdot"></span><span id="ponderlbl">ponder idle</span></span>
+      <span id="gamestatus">—</span>
+    </div>
+
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+<script src="/static/app.js"></script>
+
+<!-- ════════════════════ Chess AI — PRO FEATURE PACK ════════════════════ -->
+<script src="/static/app2.js"></script>
+</body></html>
