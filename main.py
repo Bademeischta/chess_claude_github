@@ -971,12 +971,13 @@ def play_vs_ai(model, cfg, device, human_white: bool, sims: int,
     from mcts.tree import MCTSTree
 
     from utils.ckpt_arch import latest_checkpoint
+    from engine.harness import load_state_into
     ckpt = resume or latest_checkpoint(cfg.checkpoint_dir)
     if ckpt and Path(ckpt).exists():
-        state = torch.load(ckpt, map_location=device, weights_only=True)
-        base = model._orig_mod if hasattr(model, "_orig_mod") else model
-        base.load_state_dict(state["model"])
-        print(f"[play] Loaded checkpoint: {ckpt} (step {state.get('step', '?')})")
+        # Shared load policy (engine.harness): allowlist strictness — the
+        # same rule every play front-end uses now.
+        step = load_state_into(model, ckpt, device)
+        print(f"[play] Loaded checkpoint: {ckpt} (step {step or '?'})")
     else:
         print("[play] No checkpoint found — playing against an UNTRAINED net.")
     model.eval()

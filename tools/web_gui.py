@@ -40,12 +40,7 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-import torch  # noqa: E402
-
-from config import CONFIG, update_config_from_dict   # noqa: E402
-from utils.system_probe import run_probe              # noqa: E402
-from model.network import build_model                 # noqa: E402
-from model.inference import build_inference_engine    # noqa: E402
+from config import CONFIG  # noqa: E402
 from engine.board import Board, STARTPOS_FEN          # noqa: E402
 from engine.rules import get_game_result, GameResult  # noqa: E402
 from engine.movegen import _move_uci                  # noqa: E402
@@ -3236,37 +3231,14 @@ def main() -> int:
                     help="Your initial colour. UI can flip on 'New game'.")
     args = ap.parse_args()
 
-    update_config_from_dict(run_probe(write=False))
-    device = torch.device(CONFIG.device)
-
-    # Tablebases — same auto-detect as main.py. Until now only TRAINING loaded
-    # Syzygy; play (web GUI / UCI) searched without it, so the net could trade
-    # queens into a tablebase-lost K+P endgame it had no way to evaluate
-    # (observed in a real game: 55.Qxf3?? gxf3 → 5-man loss the TB scores
-    # perfectly). With this, MCTS leaf resolution probes the TB during play too.
-    from engine.rules import init_tablebase
-    if not CONFIG.syzygy_path:
-        _auto_tb = _root / "syzygy"
-        if _auto_tb.is_dir() and any(_auto_tb.glob("*.rtbw")):
-            CONFIG.syzygy_path = str(_auto_tb)
-    if CONFIG.syzygy_path:
-        ok = init_tablebase(CONFIG.syzygy_path)
-        print(f"[web] Syzygy tablebases: {'loaded' if ok else 'not found'}")
-
-    from utils.ckpt_arch import latest_checkpoint, match_arch
-    ckpt = args.resume or latest_checkpoint(CONFIG.checkpoint_dir)
-    match_arch(CONFIG, ckpt)
-    model = build_model(CONFIG, compile_model=False).eval()
-
-    if ckpt and Path(ckpt).exists():
-        st = torch.load(ckpt, map_location=device, weights_only=True)
-        base = model._orig_mod if hasattr(model, "_orig_mod") else model
-        base.load_state_dict(st["model"], strict=False)
-        print(f"[web] Loaded {ckpt} (step {st.get('step', '?')})")
-    else:
-        print("[web] No checkpoint — UNTRAINED net.")
-
-    engine = build_inference_engine(CONFIG, model, device)
+    # Shared bring-up (engine.harness): probe → Syzygy auto-detect →
+    # checkpoint discovery/match_arch → model+weights (allowlist
+    # strictness — the previous bare strict=False could hide real
+    # architecture mismatches) → inference engine.
+    from engine.harness import load_engine
+    handle = load_engine(args.resume,
+                         log=lambda m: print(m.replace("[harness]", "[web]")))
+    model, device, engine = handle.model, handle.device, handle.engine
 
     global SESSION
     SESSION = GameSession(model, device, engine, CONFIG)
