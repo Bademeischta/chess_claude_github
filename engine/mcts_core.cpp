@@ -46,6 +46,21 @@ static std::mt19937_64 &rng() {
 //  MCTSNode
 // ============================================================
 
+// Canary validation (audit S1): throw a descriptive error the moment any
+// API touches a node whose destructor already ran (dangling pointer into
+// memory freed by advance_root/new_root). `where` names the call site.
+static inline void check_alive(const MCTSNode *n, const char *where) {
+    if (n == nullptr) {
+        throw std::runtime_error(std::string(where) +
+                                 ": null MCTSNode pointer (audit S1)");
+    }
+    if (!n->alive()) {
+        throw std::runtime_error(std::string(where) +
+            ": MCTSNode canary dead — pointer to a freed node "
+            "(use-after-free, audit S1)");
+    }
+}
+
 MCTSNode::MCTSNode(chess::Move move, MCTSNode *parent, float prior)
     : N(0), W(0.0f), Q(0.0f), P(prior),
       virtual_loss(0), move(move), parent(parent),
@@ -91,6 +106,11 @@ MCTSNode *MCTSNode::best_child(float c_puct) const {
     float best_score = -1e30f;
     int total_n = N;
     for (const auto &[mv, child_ptr] : children) {
+        // Canary check in the selection hot loop (audit S1): the compare
+        // sits next to the N/Q/P reads ucb() does anyway. A dead child
+        // here means this node's children map holds a pointer into freed
+        // memory — the exact corruption the S1 crashes dereference.
+        check_alive(child_ptr.get(), "MCTSNode::best_child");
         float score = child_ptr->ucb(c_puct, total_n);
         if (score > best_score) {
             best_score = score;
@@ -203,6 +223,16 @@ MCTSNode *MCTSTree::advance_root(chess::Move played_move) {
 
 SelectionResult MCTSTree::select_leaf(MCTSNode *root_node,
                                        const chess::Board &root_board) {
+    // Stale-root guard (audit S1): every caller must pass THIS tree's
+    // current root. A pointer to a node that advance_root()/new_root()
+    // already freed walks freed memory below (virtual-loss writes through
+    // garbage child pointers = the heap corruption behind the 0xC0000005
+    // crashes). One pointer compare converts that into a loud exception.
+    if (root_node != root.get()) {
+        throw std::invalid_argument(
+            "MCTSTree::select_leaf: root_node is not this tree's current "
+            "root (stale node pointer — audit S1)");
+    }
     SelectionResult result;
     result.path.push_back(root_node);
     MCTSNode *node = root_node;
@@ -226,6 +256,7 @@ SelectionResult MCTSTree::select_leaf(MCTSNode *root_node,
 void MCTSTree::expand(MCTSNode *leaf,
                        const std::vector<chess::Move> &legal_moves,
                        const std::vector<float> &priors) {
+    check_alive(leaf, "MCTSTree::expand");
     if (leaf->terminal) return;
     if (legal_moves.empty()) {
         // Game over — terminal node
@@ -256,6 +287,7 @@ void MCTSTree::expand(MCTSNode *leaf,
 
 // Mark a leaf as a terminal position with a known value
 void MCTSTree::mark_terminal(MCTSNode *leaf, float value) {
+    check_alive(leaf, "MCTSTree::mark_terminal");
     leaf->terminal = true;
     leaf->terminal_value = value;
 }
@@ -282,6 +314,7 @@ void MCTSTree::backup(const std::vector<MCTSNode *> &path,
     float value = leaf_value;
     for (int i = path_len - 1; i >= 0; --i) {
         MCTSNode *node = path[i];
+        check_alive(node, "MCTSTree::backup");
         node->undo_virtual_loss();
         node->W += value;
         ++node->N;
@@ -295,6 +328,13 @@ void MCTSTree::backup(const std::vector<MCTSNode *> &path,
 void MCTSTree::add_dirichlet_noise(MCTSNode *root_node,
                                     float alpha,
                                     float epsilon) {
+    // Stale-root guard (audit S1) — see select_leaf. Noise WRITES child
+    // priors, so a stale pointer here corrupts freed memory silently.
+    if (root_node != root.get()) {
+        throw std::invalid_argument(
+            "MCTSTree::add_dirichlet_noise: root_node is not this tree's "
+            "current root (stale node pointer — audit S1)");
+    }
     if (root_node->children.empty()) return;
     int n = (int)root_node->children.size();
 
@@ -455,6 +495,19 @@ int RoundDriver::select(const std::vector<MCTSTree *> &trees,
         (int)fullmove_numbers.size() != n) {
         throw std::invalid_argument(
             "RoundDriver::select: trees/roots/boards/fullmoves length mismatch");
+    }
+    // Stale-root guard (audit S1): reject any root pointer that is not its
+    // tree's CURRENT root before the workers walk (and write virtual losses
+    // into) the subtree. Costs n pointer compares per round; converts the
+    // use-after-free crash class into a Python-visible exception (the
+    // caller's fail-open handler then drops to the Python round loop).
+    for (int k = 0; k < n; ++k) {
+        if (roots[k] != trees[k]->get_root()) {
+            throw std::invalid_argument(
+                "RoundDriver::select: roots[" + std::to_string(k) +
+                "] is not the tree's current root (stale node pointer "
+                "from Python — audit S1)");
+        }
     }
     td_lambda_ = td_lambda;
     td_start_  = td_start;

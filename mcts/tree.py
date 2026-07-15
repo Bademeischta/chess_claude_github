@@ -188,6 +188,11 @@ class MCTSTree:
 
         if _USE_CPP:
             self._root_node = self._cpp_tree.new_root(0, 1.0)
+            # A leftover reset-request from a previous game's select_move
+            # fallback is fulfilled by the new_root above. Clearing it here
+            # stops the NEXT advance() from needlessly wiping the first
+            # search's subtree of the new game (audit S1 review).
+            self._needs_cpp_reset = False
         else:
             self._root_node = _PyNode(move=0, parent=None, prior=1.0)
 

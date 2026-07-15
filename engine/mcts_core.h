@@ -14,6 +14,18 @@ namespace mcts {
 // ── MCTSNode ──────────────────────────────────────────────────────────────
 
 struct MCTSNode {
+    // Lifecycle canary (audit S1): constructed nodes carry ALIVE; the
+    // destructor scribbles DEAD before releasing memory. Every API entry
+    // point that walks node pointers validates the canary — a dangling
+    // pointer (freed via advance_root/new_root but still referenced) is
+    // then reported as a precise C++ exception at the touching site
+    // instead of silently corrupting the heap and crashing minutes later
+    // in an unrelated allocation (the 0xC0000005 crash class). Costs one
+    // predictable compare next to reads the code does anyway.
+    static constexpr uint32_t CANARY_ALIVE = 0xA11CE5EEu;
+    static constexpr uint32_t CANARY_DEAD  = 0xDEADDEADu;
+    uint32_t canary = CANARY_ALIVE;
+
     int   N;             // Visit count
     float W;             // Accumulated value (sum)
     float Q;             // Mean value = W / N
@@ -32,6 +44,9 @@ struct MCTSNode {
     explicit MCTSNode(chess::Move move = 0,
                       MCTSNode *parent = nullptr,
                       float prior = 1.0f);
+    ~MCTSNode() { canary = CANARY_DEAD; }
+
+    bool alive() const { return canary == CANARY_ALIVE; }
 
     // unique_ptr children make copy non-trivial; delete to prevent accidental copies.
     MCTSNode(const MCTSNode &) = delete;

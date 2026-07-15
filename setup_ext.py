@@ -68,30 +68,59 @@ class BuildExt(_build_ext):
 
         ct = self.compiler.compiler_type
 
+        # AddressSanitizer instrumentation (audit S1): CHESS_AI_ASAN=1
+        # builds a diagnostic .pyd that traps use-after-free / heap
+        # overflow in the extension's own allocations (tree nodes, boards,
+        # move lists) at the faulting instruction instead of corrupting the
+        # heap and crashing minutes later in an unrelated malloc. Debug-only:
+        # ~2-5x slower, asserts active, needs clang_rt.asan_dynamic-x86_64
+        # on PATH (ships with MSVC; audit/scripts/stress_s1.py sets it up).
+        asan = os.environ.get("CHESS_AI_ASAN", "") == "1"
+
         if ct == "msvc":
             # MSVC (Windows)
             for ext in self.extensions:
-                ext.extra_compile_args = [
-                    "/O2",        # Optimise
-                    "/std:c++17",
-                    "/arch:AVX2", # Enables POPCNT + fast bit ops on Ryzen 7 8700F
-                    "/EHsc",
-                    "/DNDEBUG",
-                    "/bigobj",    # Large object files (magic tables)
-                ]
+                if asan:
+                    ext.extra_compile_args = [
+                        "/Od",        # No optimisation — precise ASan stacks
+                        "/Zi",        # Debug info (symbolised reports)
+                        "/std:c++17",
+                        "/arch:AVX2",
+                        "/EHsc",
+                        "/bigobj",
+                        "/fsanitize=address",
+                        # NDEBUG deliberately NOT defined: asserts active.
+                    ]
+                    ext.extra_link_args = ["/DEBUG", "/INCREMENTAL:NO"]
+                else:
+                    ext.extra_compile_args = [
+                        "/O2",        # Optimise
+                        "/std:c++17",
+                        "/arch:AVX2", # Enables POPCNT + fast bit ops on Ryzen 7 8700F
+                        "/EHsc",
+                        "/DNDEBUG",
+                        "/bigobj",    # Large object files (magic tables)
+                    ]
         else:
             # GCC / Clang
             for ext in self.extensions:
-                ext.extra_compile_args = [
-                    "-O3",
-                    "-std=c++17",
-                    "-march=native",  # Use all available CPU features (AVX2, POPCNT)
-                    "-fvisibility=hidden",
-                    "-DNDEBUG",
-                ]
+                if asan:
+                    ext.extra_compile_args = [
+                        "-O1", "-g", "-std=c++17", "-march=native",
+                        "-fno-omit-frame-pointer", "-fsanitize=address",
+                    ]
+                    ext.extra_link_args = ["-fsanitize=address"]
+                else:
+                    ext.extra_compile_args = [
+                        "-O3",
+                        "-std=c++17",
+                        "-march=native",  # Use all available CPU features (AVX2, POPCNT)
+                        "-fvisibility=hidden",
+                        "-DNDEBUG",
+                    ]
                 if sys.platform == "darwin":
                     ext.extra_compile_args += ["-stdlib=libc++"]
-                    ext.extra_link_args = ["-stdlib=libc++"]
+                    ext.extra_link_args = (ext.extra_link_args or []) + ["-stdlib=libc++"]
 
         super().build_extensions()
 
