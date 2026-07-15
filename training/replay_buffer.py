@@ -81,6 +81,50 @@ class SumTree:
         data_idx = leaf_idx - self.capacity + 1
         return data_idx, self.tree[leaf_idx]
 
+    def get_leaves_batch(self, values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Vectorised `get_leaf` for a whole batch of cumulative values.
+
+        Replaces B sequential Python tree-descents (B × ~log2(N) interpreted
+        iterations per training step) with ~log2(N) numpy passes over the
+        batch — identical routing semantics (v <= left_sum → left child).
+        Returns (data_indices, leaf_priorities), both shape (B,).
+        """
+        idx = np.zeros(values.shape[0], dtype=np.int64)  # start at the root
+        v = values.astype(np.float64, copy=True)
+        n = len(self.tree)
+        while True:
+            left = 2 * idx + 1
+            internal = left < n         # rows still on internal nodes
+            if not internal.any():
+                break
+            li = left[internal]
+            left_sum = self.tree[li]
+            go_left = v[internal] <= left_sum
+            idx[internal] = np.where(go_left, li, li + 1)
+            v[internal] = np.where(go_left, v[internal], v[internal] - left_sum)
+        return idx - (self.capacity - 1), self.tree[idx]
+
+    def update_batch(self, data_indices: np.ndarray,
+                     priorities: np.ndarray) -> None:
+        """Vectorised bulk `update`: write leaves, propagate the deltas up
+        level-by-level with `np.add.at` (duplicate ancestors accumulate
+        correctly). Duplicate leaf indices are deduplicated first — with the
+        sequential semantics the later write would just overwrite the same
+        value; double-counting the delta would corrupt the internal sums."""
+        tree_idx = np.asarray(data_indices, dtype=np.int64) + self.capacity - 1
+        uniq, first = np.unique(tree_idx, return_index=True)
+        new_vals = np.asarray(priorities, dtype=np.float64)[first]
+        change = new_vals - self.tree[uniq]
+        self.tree[uniq] = new_vals
+        nodes, ch = uniq, change
+        while True:
+            m = nodes > 0
+            if not m.any():
+                break
+            parents = (nodes[m] - 1) // 2
+            np.add.at(self.tree, parents, ch[m])
+            nodes, ch = parents, ch[m]
+
     @property
     def total_priority(self) -> float:
         return self.tree[0]
@@ -276,24 +320,21 @@ class PrioritizedReplayBuffer:
         if self._size == 0:
             raise RuntimeError("Cannot sample from empty buffer")
 
-        indices = []
-        priorities = []
         beta = self._current_beta()
         segment = self.tree.total_priority / batch_size
 
-        for i in range(batch_size):
-            a = segment * i
-            b = segment * (i + 1)
-            v = np.random.uniform(a, b)
-            idx, p = self.tree.get_leaf(v)
-            indices.append(idx)
-            priorities.append(p)
+        # Stratified targets, one per segment: v_i = (i + u_i) * segment —
+        # the same distribution as the previous per-segment uniform draws,
+        # resolved in ONE vectorised tree descent instead of a Python loop
+        # of `batch_size` × ~log2(N) iterations (audit 2026-07-02 S7).
+        u = np.random.uniform(0.0, 1.0, size=batch_size)
+        targets = (np.arange(batch_size, dtype=np.float64) + u) * segment
+        indices, priorities = self.tree.get_leaves_batch(targets)
 
-        indices = np.array(indices, dtype=np.int64)
         records = [self._data[i] for i in indices]
 
         # Importance sampling weights: w = (N * P(i))^-beta
-        probs = np.array(priorities) / self.tree.total_priority
+        probs = priorities / self.tree.total_priority
         weights = (self._size * probs) ** (-beta)
         weights /= weights.max()  # Normalise
         weights = weights.astype(np.float32)
@@ -303,10 +344,11 @@ class PrioritizedReplayBuffer:
     def update_priorities(
         self, indices: np.ndarray, td_errors: np.ndarray
     ) -> None:
-        prios = (np.abs(td_errors) + 1e-6) ** self.alpha
-        for idx, prio in zip(indices, prios):
-            # Preserve the per-slot draw multiplier set at add() time.
-            self.tree.update(idx, prio * float(self._prio_mult[idx]))
+        indices = np.asarray(indices, dtype=np.int64)
+        prios = (np.abs(np.asarray(td_errors, dtype=np.float64)) + 1e-6) ** self.alpha
+        # Preserve the per-slot draw multiplier set at add() time; bulk
+        # SumTree update replaces the per-index Python loop (audit S7).
+        self.tree.update_batch(indices, prios * self._prio_mult[indices])
         self._max_prio = max(self._max_prio, float(prios.max()))
 
     def step(self) -> None:
