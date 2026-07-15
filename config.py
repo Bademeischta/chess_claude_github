@@ -460,8 +460,10 @@ class ChessAIConfig:
 
     # ── Reproducibility ──────────────────────────────────────────────────
     # 0 = unseeded (fresh entropy each run). Any other value seeds torch,
-    # numpy and random at startup; checkpoints additionally store/restore
-    # RNG states so resumed runs continue the same streams (audit P8-1).
+    # numpy, random AND the C++ backend RNG (chess_ext.set_rng_seed —
+    # move sampling + Dirichlet noise; unseeded before audit S9) at
+    # startup; checkpoints additionally store/restore the Python-side RNG
+    # states so resumed runs continue the same streams (audit P8-1).
     # Note: cudnn.benchmark stays on, so GPU kernels may still introduce
     # tiny nondeterminism; this makes runs *practically* reproducible.
     seed: int = 42

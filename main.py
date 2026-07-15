@@ -157,6 +157,15 @@ def initialise_system(args) -> torch.device:
     if getattr(CONFIG, "seed", 0):
         import random as _random
         torch.manual_seed(CONFIG.seed)
+        # C++ backend RNG (move sampling + Dirichlet noise) — without this
+        # the C++ path drew from random_device every run and the
+        # "practically reproducible" claim only held for the Python
+        # fallback (audit S9).
+        try:
+            import chess_ext
+            chess_ext.set_rng_seed(int(CONFIG.seed))
+        except (ImportError, AttributeError):
+            pass  # python fallback, or a pre-S9 chess_ext build
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(CONFIG.seed)
         np.random.seed(CONFIG.seed)

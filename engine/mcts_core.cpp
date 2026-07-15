@@ -36,10 +36,35 @@ namespace mcts {
 // Single high-quality PRNG (thread-local: select_leaf/backup may run from
 // multiple game-driver threads). Replaces std::rand() which is global,
 // low-quality and not thread-safe.
+//
+// Seedable since audit S9: set_rng_seed() makes the C++ randomness
+// (temperature move-sampling + Dirichlet noise) reproducible. Both RNG
+// consumers only ever run on the Python-calling thread — the RoundDriver
+// worker threads do select/expand/backup, none of which draw random
+// numbers — so reseeding the calling thread's generator plus stamping the
+// seed for any later-created thread is sufficient for determinism even
+// with cpp_round_threads > 1.
+static std::atomic<uint64_t> g_rng_seed{0};
+
+static std::mt19937_64 make_generator() {
+    uint64_t s = g_rng_seed.load(std::memory_order_relaxed);
+    if (s != 0) {
+        return std::mt19937_64(
+            s ^ std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    }
+    return std::mt19937_64(std::random_device{}() ^ 0x9E3779B97F4A7C15ULL);
+}
+
 static std::mt19937_64 &rng() {
-    static thread_local std::mt19937_64 g(
-        std::random_device{}() ^ 0x9E3779B97F4A7C15ULL);
+    static thread_local std::mt19937_64 g = make_generator();
     return g;
+}
+
+void set_rng_seed(uint64_t seed) {
+    g_rng_seed.store(seed, std::memory_order_relaxed);
+    // Reseed THIS thread's already-constructed generator (thread_local
+    // init above only runs once per thread).
+    rng().seed(seed ^ std::hash<std::thread::id>{}(std::this_thread::get_id()));
 }
 
 // ============================================================

@@ -55,6 +55,12 @@ PYBIND11_MODULE(chess_ext, m) {
     m.def("reset_stale_move_count", &reset_stale_move_count,
           "Reset the stale-move counter to zero (use between tests).");
 
+    // ── Reproducibility (audit S9) ────────────────────────
+    m.def("set_rng_seed", &mcts::set_rng_seed, py::arg("seed"),
+          "Seed the C++ MCTS RNG (move sampling + Dirichlet noise). "
+          "Called by main.py when CONFIG.seed != 0 so training runs are "
+          "reproducible on the C++ path too.");
+
     // ── Constants ─────────────────────────────────────────
     m.attr("WHITE")  = WHITE;
     m.attr("BLACK")  = BLACK;

@@ -119,6 +119,13 @@ private:
     std::unique_ptr<MCTSNode> root;
 };
 
+// ── RNG seeding (audit S9) ────────────────────────────────────────────────
+// Makes the C++ randomness (temperature move-sampling, Dirichlet noise)
+// deterministic. 0 is never set (config seed 0 = unseeded). Reseeds the
+// calling thread's generator immediately; threads created afterwards
+// derive their seed from this value ^ their thread-id hash.
+void set_rng_seed(uint64_t seed);
+
 // ── AlphaZero action encoding (canonical, side-to-move view) ─────────────
 // C++ twin of engine/movegen.py::move_to_action_index — MUST stay bit-equal
 // (pinned by tests/test_round_driver.py parity test). Black squares are
