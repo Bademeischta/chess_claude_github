@@ -32,13 +32,8 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-import torch
-
-from config import CONFIG, update_config_from_dict
-from utils.system_probe import run_probe
-from utils.ckpt_arch import latest_checkpoint, match_arch
-from model.network import build_model
-from model.inference import build_inference_engine
+from config import CONFIG
+from engine.harness import load_engine, time_budget_s
 from engine.board import Board, STARTPOS_FEN
 from engine.rules import get_game_result, GameResult
 from engine.movegen import _move_uci
@@ -72,9 +67,9 @@ def _board_from(cmd_tokens: list[str]) -> Board:
 
 
 class UCIEngine:
-    def __init__(self, model, cfg, device, default_sims: int) -> None:
-        self.model, self.cfg, self.device = model, cfg, device
-        self.engine = build_inference_engine(cfg, model, device)
+    def __init__(self, handle, default_sims: int) -> None:
+        self.model, self.cfg = handle.model, handle.cfg
+        self.device, self.engine = handle.device, handle.engine
         self.default_sims = default_sims
         self.board = Board.from_fen(STARTPOS_FEN)
         self._stop = threading.Event()
@@ -109,16 +104,16 @@ class UCIEngine:
 
         if (n := val("nodes")) is not None:
             sims_target = n
-        mt = val("movetime")
-        if mt is not None:
-            deadline = time.time() + mt / 1000.0
-        else:
-            stm = self.board.side_to_move
-            clock = val("wtime") if stm == 0 else val("btime")
-            inc = (val("winc") if stm == 0 else val("binc")) or 0
-            if clock is not None:
-                budget = clock / 25.0 + inc * 0.75      # simple, safe
-                deadline = time.time() + max(0.05, budget / 1000.0)
+        # Shared time-control heuristic (engine.harness): movetime wins,
+        # else clock/25 + inc*0.75 — one formula for UCI/web/terminal.
+        stm = self.board.side_to_move
+        budget_s = time_budget_s(
+            val("wtime") if stm == 0 else val("btime"),
+            (val("winc") if stm == 0 else val("binc")) or 0,
+            movetime_ms=val("movetime"),
+        )
+        if budget_s is not None:
+            deadline = time.time() + budget_s
         if sims_target is None and deadline is None and not infinite:
             sims_target = self.default_sims
 
@@ -210,34 +205,14 @@ def main() -> int:
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        update_config_from_dict(run_probe(write=False))
-        device = torch.device(CONFIG.device)
-
-        # Tablebases — same auto-detect as main.py. Without this the UCI
-        # engine (LucasChess / chess.com relay games) searched WITHOUT
-        # Syzygy even though training had it, so it could trade into
-        # tablebase-lost ≤5-man endgames it had no way to evaluate.
-        from engine.rules import init_tablebase
-        if not CONFIG.syzygy_path:
-            _auto_tb = _root / "syzygy"
-            if _auto_tb.is_dir() and any(_auto_tb.glob("*.rtbw")):
-                CONFIG.syzygy_path = str(_auto_tb)
-        if CONFIG.syzygy_path:
-            ok = init_tablebase(CONFIG.syzygy_path)
-            print(f"[uci] Syzygy tablebases: "
-                  f"{'loaded' if ok else 'not found'}")   # goes to stderr here
-
-        ckpt = args.resume or latest_checkpoint(CONFIG.checkpoint_dir)
-        match_arch(CONFIG, ckpt)
-        model = build_model(CONFIG, compile_model=False).eval()
-        loaded_msg = "no checkpoint - UNTRAINED net"
-        if ckpt and Path(ckpt).exists():
-            st = torch.load(ckpt, map_location=device, weights_only=True)
-            base = model._orig_mod if hasattr(model, "_orig_mod") else model
-            base.load_state_dict(st["model"])
-            loaded_msg = f"loaded {ckpt}"
+        # Shared bring-up (engine.harness): probe → Syzygy auto-detect →
+        # checkpoint discovery/match_arch → model+weights → inference
+        # engine. All setup chatter lands on stderr here.
+        handle = load_engine(args.resume)
+        loaded_msg = (f"loaded {handle.ckpt_path}" if handle.ckpt_path
+                      else "no checkpoint - UNTRAINED net")
         sims = args.sims if args.sims is not None else CONFIG.mcts_sims
-        eng = UCIEngine(model, CONFIG, device, sims)
+        eng = UCIEngine(handle, sims)
     finally:
         sys.stdout = real_stdout
 
