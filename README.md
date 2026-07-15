@@ -311,8 +311,27 @@ oder mehr aus der Hardware holen will, hat diese Hebel:
 |---|---|
 | `CUDA_LAUNCH_BLOCKING=1` | Alle CUDA-Kernels synchron — nur für Debug. **NICHT** im Produktivlauf setzen (kostet 2-5× Throughput). |
 | `CHESS_AI_NO_CPP=1` | C++-Engine deaktivieren, Python-Fallback erzwingen. Sehr viel langsamer; nur zum Reproduzieren eines C++-Bugs. |
+| `CHESS_AI_DATA_DIR=D:\chess_ai_data` | Verlagert die schreibintensiven Artefakt-Ordner (`checkpoints/`, `runs/`) aus dem Repo heraus — **empfohlen, wenn das Repo in OneDrive liegt** (siehe Abschnitt „OneDrive" unten). |
+| `CHESS_AI_ASAN=1` | `setup_ext.py build_ext` baut die C++-Extension mit AddressSanitizer (Diagnose-Build für Native-Crash-Jagd, ~50-100× langsamer). |
 | `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256,expandable_segments:True` | Reduziert VRAM-Fragmentierung bei langen Runs (sinnvoll ab Tagen Trainingsdauer). |
 | `TORCH_LOGS=recompiles` | Wenn `torch.compile` aktiv ist (Linux/WSL), zeigt jede ungewollte Re-Compile-Stelle. |
+
+### OneDrive (Audit S10)
+
+Dieses Repo liegt standardmäßig in einem OneDrive-Ordner. Der Sync-Client
+nimmt transiente Datei-Locks auf große Dateien — eine klassische Ursache für
+`os.replace()`-Fehler beim atomaren Schreiben der ~278-MB-Checkpoints — und
+lädt pro Trainingsstunde mehrere GB Checkpoint-/Buffer-Churn neu hoch.
+Zwei Auswege (einer reicht):
+
+1. **`CHESS_AI_DATA_DIR` setzen** (empfohlen): verlagert `checkpoints/` und
+   `runs/` auf einen nicht-synchronisierten Pfad, z. B.
+   `setx CHESS_AI_DATA_DIR D:\chess_ai_data`. Bestehende Checkpoints einmalig
+   dorthin kopieren; Code-Repo bleibt in OneDrive versioniert.
+2. **Ordner vom Sync ausschließen**: OneDrive → Einstellungen → Synchronisieren
+   und sichern → Erweiterte Einstellungen → Ordner auswählen, dort
+   `checkpoints/`, `runs/` und `replay_buffer/` abwählen (bzw. die Ordner per
+   „Immer behalten auf diesem Gerät" + Ausschluss markieren).
 
 ### Heißeste Stellschrauben in `config.py`
 

@@ -7,6 +7,7 @@ Values tagged #hw-derived are overwritten at runtime by utils/system_probe.py.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 
 
@@ -468,6 +469,28 @@ class ChessAIConfig:
 
 # Singleton used throughout the codebase.
 CONFIG = ChessAIConfig()
+
+# ── Off-OneDrive data override (audit S10) ────────────────────────────────
+# The repo lives inside OneDrive; the sync client takes transient locks on
+# large files, which is a classic cause of os.replace() failures on the
+# 278 MB checkpoint writes and re-uploads ~GB of churn per training hour
+# (checkpoints every ~20 min + buffer snapshots + TB events). Set
+#   CHESS_AI_DATA_DIR=D:\chess_ai_data
+# to relocate the write-heavy artifact dirs (checkpoints/, runs/) outside
+# the synced tree. Default behaviour is unchanged when the variable is
+# unset. Alternative: exclude those folders from OneDrive sync — see
+# README "OneDrive". (The distill buffer files passed via CLI args are
+# read-mostly and stay put either way.)
+_data_root = os.environ.get("CHESS_AI_DATA_DIR", "").strip()
+if _data_root:
+    _p = Path(_data_root)
+    CONFIG.checkpoint_dir = str(_p / "checkpoints")
+    CONFIG.tensorboard_dir = str(_p / "runs")
+    for _d in (CONFIG.checkpoint_dir, CONFIG.tensorboard_dir):
+        try:
+            Path(_d).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
 
 def get_config() -> ChessAIConfig:
