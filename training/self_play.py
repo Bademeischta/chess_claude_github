@@ -75,6 +75,11 @@ class SelfPlayWorker:
         self.games_generated   = 0
         self.positions_generated = 0
         self._last_stats_time  = time.time()
+        # Native-corruption monitor (audit 2026-07-02 S1): the C++ engine
+        # counts stale/illegal moves hitting the apply_move safety branch —
+        # the leading indicator for the access-violation crashes in
+        # RoundDriver.select. Logged per batch when it changes.
+        self._last_stale_count = 0
 
     # ── Single-game generation ────────────────────────────────────────────
 
@@ -246,6 +251,22 @@ class SelfPlayWorker:
         print(f"  done: {n_games} games | +{total} pos | {elapsed:.1f}s | "
               f"{pos_per_s:.0f} pos/s | ~{avg_moves:.0f} moves/game",
               flush=True)
+
+        # Stale-move monitor (audit S1): a rising counter means the C++ tree
+        # applied a move whose source square was empty — the precursor of
+        # the RoundDriver access-violation crashes. Surface it immediately
+        # with the batch context instead of discovering it post-mortem.
+        try:
+            import chess_ext
+            stale = int(chess_ext.stale_move_count())
+            if stale != self._last_stale_count:
+                print(f"  [self_play] WARNING: chess_ext.stale_move_count()="
+                      f"{stale} (+{stale - self._last_stale_count} this batch)"
+                      f" — native tree corruption indicator (audit S1)",
+                      flush=True)
+                self._last_stale_count = stale
+        except ImportError:
+            pass  # python fallback backend — no native counter
 
         with self._stats_lock:
             self.games_generated     += n_games
