@@ -1,3 +1,24 @@
+// ─── Per-tab session id (multi-session, plan B2) ──────────────────────
+// sessionStorage is per-TAB: each tab gets its own id, so several tabs
+// play several independent games. The wrapper appends ?sid=... to every
+// /api call (fetch + EventSource) — the server keys GameSessions by it.
+(() => {
+  let sid = sessionStorage.getItem('chessai_sid');
+  if (!sid) {
+    sid = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID().replace(/-/g, '')
+        : Date.now().toString(36) + Math.random().toString(36).slice(2);
+    sessionStorage.setItem('chessai_sid', sid);
+  }
+  const withSid = u => (typeof u === 'string' && u.startsWith('/api/'))
+      ? u + (u.includes('?') ? '&' : '?') + 'sid=' + sid : u;
+  const _fetch = window.fetch.bind(window);
+  window.fetch = (u, o) => _fetch(withSid(u), o);
+  const _ES = window.EventSource;
+  window.EventSource = function (u, o) { return new _ES(withSid(u), o); };
+  window.EventSource.prototype = _ES.prototype;
+})();
+
 // ─── State ────────────────────────────────────────────────────────────
 let game = new Chess(), board = null, busy = false;
 let lastMoveSquares = [];
