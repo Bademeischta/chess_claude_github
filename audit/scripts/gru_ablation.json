@@ -1,0 +1,80 @@
+{
+  "seed": 20260715,
+  "hours_per_variant": 4.0,
+  "started": "2026-07-16 06:25:45",
+  "gru": {
+    "variant": "gru",
+    "use_gru": true,
+    "wallclock_h": 4.02,
+    "steps": 9280,
+    "games": 24800,
+    "positions": 2394748,
+    "selfplay_pos_per_s": 185.8,
+    "median_step_ms": 155.8,
+    "final_losses": {
+      "loss/total": 0.93
+    },
+    "checkpoint": "C:\\Users\\silas\\OneDrive\\Desktop\\ChatKi\\chess_ai\\audit\\tmp\\gru_ablation\\gru\\checkpoints\\gru_final.pt",
+    "recovered_from_log": true,
+    "sf_probe": {
+      "wins": 0,
+      "draws": 0,
+      "losses": 40,
+      "games": 40,
+      "anchor_elo": 800,
+      "anchor_label": "SF skill 0 (~800)",
+      "elo_diff": -400.0,
+      "ci_lo": -400.0,
+      "ci_hi": -400.0,
+      "estimated_elo": 400.0,
+      "est_lo": 400.0,
+      "est_hi": 400.0,
+      "bound_only": true,
+      "seconds": 97.97524189949036
+    }
+  },
+  "nogru": {
+    "variant": "nogru",
+    "use_gru": false,
+    "wallclock_h": 4.0,
+    "steps": 9994,
+    "games": 64640,
+    "positions": 2607978,
+    "selfplay_pos_per_s": 198.5,
+    "median_step_ms": 128.5,
+    "final_losses": {
+      "loss/total": 0.8223
+    },
+    "checkpoint": "C:\\Users\\silas\\OneDrive\\Desktop\\ChatKi\\chess_ai\\audit\\tmp\\gru_ablation\\nogru\\checkpoints\\nogru_final.pt",
+    "cfg_variant": {
+      "use_gru_history": false,
+      "mcts_sims": 50,
+      "batch_size": 1024,
+      "parallel_games": 160,
+      "num_res_blocks": 10,
+      "num_channels": 256
+    },
+    "sf_probe": {
+      "wins": 0,
+      "draws": 7,
+      "losses": 33,
+      "games": 40,
+      "anchor_elo": 800,
+      "anchor_label": "SF skill 0 (~800)",
+      "elo_diff": -400.0,
+      "ci_lo": -400.0,
+      "ci_hi": -269.284283412842,
+      "estimated_elo": 400.0,
+      "est_lo": 400.0,
+      "est_hi": 530.715716587158,
+      "bound_only": false,
+      "seconds": 94.87796211242676
+    }
+  },
+  "head_to_head": {
+    "nogru_wins": 0,
+    "draws": 20,
+    "gru_wins": 40,
+    "games": 60
+  }
+}
