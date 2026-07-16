@@ -164,6 +164,26 @@ def head_to_head(model_a, model_b, cfg, games: int) -> dict:
     return {"nogru_wins": w, "draws": d, "gru_wins": l, "games": w + d + l}
 
 
+def _load_finished_variant(name: str, use_gru: bool, stats_json: str):
+    """Resume support: rebuild a completed variant's model from its saved
+    checkpoint + its recorded stats (recovered from the run log), instead
+    of burning another wallclock budget. Added after the 2026-07-15 night
+    run was killed between variants by a session teardown."""
+    from model.network import build_model
+    from engine.harness import load_state_into
+
+    res = json.loads(Path(stats_json).read_text(encoding="utf-8"))
+    assert res.get("variant") == name, f"stats file is not for '{name}'"
+    CONFIG.use_gru_history = use_gru
+    _seed_all()
+    device = torch.device(CONFIG.device)
+    model = build_model(CONFIG, compile_model=False).eval()
+    load_state_into(model, res["checkpoint"], device)
+    print(f"[{name}] resumed from {res['checkpoint']} "
+          f"(steps={res.get('steps')})", flush=True)
+    return res, model
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=4.0,
@@ -172,6 +192,10 @@ def main() -> int:
                     help="self-play sims/move (bootstrap regime default 50)")
     ap.add_argument("--probe-games", type=int, default=40)
     ap.add_argument("--h2h-games", type=int, default=60)
+    ap.add_argument("--gru-done", default=None, metavar="STATS_JSON",
+                    help="skip the GRU variant: path to its recovered "
+                         "result-dict JSON (checkpoint is loaded from the "
+                         "'checkpoint' field for the measurements)")
     args = ap.parse_args()
 
     update_config_from_dict(run_probe(write=False))
@@ -179,7 +203,10 @@ def main() -> int:
     out: dict = {"seed": SEED, "hours_per_variant": args.hours,
                  "started": time.strftime("%Y-%m-%d %H:%M:%S")}
 
-    res_gru, model_gru = run_variant("gru", True, args.hours, args.sims)
+    if args.gru_done:
+        res_gru, model_gru = _load_finished_variant("gru", True, args.gru_done)
+    else:
+        res_gru, model_gru = run_variant("gru", True, args.hours, args.sims)
     out["gru"] = res_gru
     res_nog, model_nog = run_variant("nogru", False, args.hours, args.sims)
     out["nogru"] = res_nog
