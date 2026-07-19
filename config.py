@@ -311,9 +311,12 @@ class ChessAIConfig:
     # anneal_end <= anneal_start to disable annealing entirely. The window
     # is anchored to the seeding date (step ~100k) — re-anchor it if the
     # teacher buffer is re-seeded with stronger data.
+    # Re-anchored 2026-07-18 with the fresh skill-10..16 re-seed (the old
+    # 100k..150k window belonged to the first, weaker teacher set): full
+    # weight for ~50k steps from the post-rollback base (110k), then anneal.
     teacher_weight_final: float = 0.3
-    teacher_weight_anneal_start: int = 100_000
-    teacher_weight_anneal_end: int = 150_000
+    teacher_weight_anneal_start: int = 160_000
+    teacher_weight_anneal_end: int = 210_000
 
     # ── Replay buffer (Prioritized Experience Replay) ────────────────────
     replay_buffer_cap: int = 2000000  # hw-derived
@@ -375,12 +378,13 @@ class ChessAIConfig:
     # defaults — ~2-4% of wall time at 5k-step cadence. 0 disables.
     sf_elo_every_n_steps: int = 5_000
     sf_elo_games: int = 30
-    # Skill 1 ≈ 950 Elo. Chosen from measurement (2026-07-15: the step-110k
-    # net LOST a quick probe vs skill 1 at 32 sims). Raise the anchor as
-    # the net grows past ~65% score — a mismatched anchor (all wins / all
+    # Skill 0 ≈ 800 Elo. History: skill 1 (~950) was measured too strong —
+    # the 2026-07-16..18 run scored 5-10% against it (probes at steps 115k
+    # and 120k: est. ~550-570, bound-dominated). Raise the anchor as the
+    # net grows past ~65% score — a mismatched anchor (all wins / all
     # losses) yields only a ±400 bound, not an estimate; the console
     # output says so when it happens.
-    sf_elo_skill: int = 1
+    sf_elo_skill: int = 0
     sf_elo_sims: int = 0          # our sims/move for the probe; 0 = mcts_sims
 
     # ── Entropy-Regulated Exploration Decay ──────────────────────────────
