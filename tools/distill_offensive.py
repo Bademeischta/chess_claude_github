@@ -119,46 +119,61 @@ def main() -> int:
     # ── 2. Baseline probe ─────────────────────────────────────────────
     baseline = _probe("baseline", args.probe_games)
 
-    # ── 3. Merge parts ────────────────────────────────────────────────
-    records = []
+    # ── 3. Validate parts (NO merged mega-file!) ──────────────────────
+    # Lesson from the first run (2026-07-19): the harvest parts totalled
+    # 63 GB (dense fp16 history arrays per record) and writing a merged
+    # copy filled the disk (Errno 28) and killed the pipeline. Parts are
+    # consumed directly; unreadable ones (e.g. a worker's save died on
+    # the full disk) are skipped with a warning.
+    valid_parts: list[Path] = []
+    n_positions = 0
     for part in parts:
-        if not part.exists():
-            _log(f"WARNING: missing harvest part {part.name}")
-            continue
-        with open(part, "rb") as f:
-            st = pickle.load(f)
-        n = int(st.get("size", 0))
-        recs = [r for r in st.get("data", [])[:n] if r is not None]
-        records.extend(recs)
-        _log(f"merged {part.name}: {len(recs)} positions")
-    merged = out_dir / "sf_distill.pkl"
-    with open(merged, "wb") as f:
-        # _merge_buffer_file consumes only "data" + "size".
-        pickle.dump({"data": records, "size": len(records)}, f, protocol=4)
-    _log(f"merged buffer -> {merged.name} ({len(records)} positions)")
-    if not records:
-        _log("ABORT: no harvested positions.")
+        try:
+            with open(part, "rb") as f:
+                st = pickle.load(f)
+            n = int(st.get("size", 0))
+            if n > 0:
+                valid_parts.append(part)
+                n_positions += n
+                _log(f"validated {part.name}: {n} positions")
+            else:
+                _log(f"WARNING: {part.name} is empty — skipped")
+            del st
+        except Exception as e:  # noqa: BLE001 — truncated/missing pickle
+            _log(f"WARNING: {part.name} unreadable "
+                 f"({type(e).__name__}) — skipped")
+    if not valid_parts:
+        _log("ABORT: no usable harvested positions.")
         return 1
 
-    # ── 4. Reseed the teacher buffer ──────────────────────────────────
+    # ── 4. Reseed the teacher buffer (reads parts directly) ───────────
     rc = subprocess.call(
         [PY, "-u", str(_root / "tools" / "seed_teacher.py"),
-         "--sources", str(merged.relative_to(_root)),
+         "--sources", ",".join(str(p.relative_to(_root))
+                               for p in valid_parts),
          "--capacity", "150000"], cwd=_root)
     _log(f"seed_teacher rc={rc}")
 
-    # ── 5. Distill training ───────────────────────────────────────────
+    # ── 5. Distill training — one phase run PER part ──────────────────
+    # The live replay ring holds only ~154k positions; merging every part
+    # before training would leave just the LAST part's data in the ring.
+    # Per-part runs (each: merge + `epochs` passes, resuming from the
+    # previous run's final save) cover the whole harvest fairly.
     t_gpu = time.time()
-    rc = subprocess.call(
-        [PY, "-u", str(_root / "main.py"), "--phase=sf_distill",
-         "--resume", str(_root / "checkpoints" / "latest.pt")], cwd=_root)
+    for part in valid_parts:
+        rc = subprocess.call(
+            [PY, "-u", str(_root / "main.py"), "--phase=sf_distill",
+             "--sf-buffer", str(part.relative_to(_root)),
+             "--resume", str(_root / "checkpoints" / "latest.pt")],
+            cwd=_root)
+        _log(f"sf_distill[{part.name}] rc={rc}")
     gpu_hours = (time.time() - t_gpu) / 3600.0
-    _log(f"sf_distill rc={rc} ({gpu_hours:.2f} GPU-h)")
+    _log(f"distill total: {gpu_hours:.2f} GPU-h")
 
     # ── 6. Post probe + summary ───────────────────────────────────────
     post = _probe("post", args.probe_games)
     summary = {
-        "harvested_positions": len(records),
+        "harvested_positions": n_positions,
         "baseline": baseline, "post": post,
         "distill_gpu_hours": round(gpu_hours, 2),
         "elo_delta": (round(post.get("estimated_elo", 0)
