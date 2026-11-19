@@ -301,11 +301,18 @@ class SelfPlayWorker:
                     policy[idx] = 1.0 / len(legal)
 
             wdl = tb_val  # Already in current-side's perspective
+            # The zero history is CORRECT here and not the defect fixed in
+            # the harvest tools on 2026-08-04: a tablebase position is
+            # synthetic, it has no predecessors, and that is exactly the
+            # right-aligned empty window the net also sees on the first ply
+            # of a real game. float16 to match every other producer — a
+            # float32 record in the ring forces the whole batch to upcast
+            # in the trainer's np.stack.
             pos = PositionRecord(
-                board_tensor   = board.to_tensor(),
+                board_tensor   = board.to_tensor().astype(np.float16),
                 history_tensor = np.zeros((self.cfg.gru_history_len,
                                             self.cfg.input_planes, 8, 8),
-                                           dtype=np.float32),
+                                           dtype=np.float16),
                 policy_target  = policy,
                 wdl_label      = wdl,
                 phase          = board.get_phase(),

@@ -197,8 +197,17 @@ class Trainer:
         outside that window the pure MC return is used.
 
         target = λ × mc_return + (1-λ) × q_value
+
+        INVARIANT: `q_values` is only meaningful for records produced by an
+        actual MCTS search. Every synthetic producer (stockfish_distill,
+        lichess_puzzles, the tablebase pretraining) leaves BOTH `mcts_q` at
+        0.0 and `move_number` at 0, while self-play records carry
+        `fullmove_number` which starts at 1. `td_start` ≥ 1 is therefore what
+        keeps a zero Q from dragging those value targets toward the draw
+        class — do not lower it to 0, and do not start stamping real move
+        numbers on synthetic records without giving them a real Q.
         """
-        mask = (move_numbers >= td_start) & (move_numbers <= td_end)
+        mask = (move_numbers >= max(1, td_start)) & (move_numbers <= td_end)
         mask = mask.float()
         blended = td_lambda * wdl_labels + (1.0 - td_lambda) * q_values
         return mask * blended + (1.0 - mask) * wdl_labels

@@ -202,18 +202,43 @@ def _build_records_for_puzzle(
     solver_side = 0 if pcb.turn == chess.WHITE else 1
     records: list[PositionRecord] = []
 
+    # GRU history in the self-play convention (mcts.tree.fill_history): the
+    # boards strictly BEFORE the current one, right-aligned, zero-padded on
+    # the left, each canonicalised to its own mover. A puzzle starts with
+    # the pre-setup position as its only known predecessor and fills up as
+    # the solution line advances. Feeding an all-zero history here (as this
+    # tool did until 2026-08-04) taught the net to associate a blank
+    # history channel with tactically sharp play — a context it never sees
+    # while playing.
+    T = int(cfg.gru_history_len)
+    past: list[np.ndarray] = []
+    try:
+        past.append(Board.from_fen(fen).to_tensor().astype(np.float16))
+    except Exception:
+        pass  # No predecessor available — the window just stays shorter.
+
     # Iterate over the solution moves.
     for i in range(1, len(moves)):
         uci = moves[i]
         # Is it the solver's turn? The solver moves at odd i (i=1,3,5...).
         is_solver_move = ((i - 1) % 2 == 0)
 
+        # Every position on the line is history for the ones after it —
+        # built here so opponent replies enter the window too.
+        try:
+            board_obj = Board.from_fen(pcb.fen())
+        except Exception:
+            break
+        board_np = board_obj.to_tensor().astype(np.float16)
+        hist_np = np.zeros((T, cfg.input_planes, 8, 8), dtype=np.float16)
+        n = min(len(past), T)
+        if n:
+            hist_np[T - n:] = past[-n:]
+        past.append(board_np)
+        del past[:-T]
+
         if is_solver_move:
             # Build a PositionRecord for this decision point.
-            try:
-                board_obj = Board.from_fen(pcb.fen())
-            except Exception:
-                break
             move_int = _uci_to_move_int(board_obj, uci)
             if move_int is None:
                 # Engine doesn't enumerate this move — skip remaining.
@@ -227,11 +252,8 @@ def _build_records_for_puzzle(
 
             try:
                 records.append(PositionRecord(
-                    board_tensor   = board_obj.to_tensor(),
-                    history_tensor = np.zeros(
-                        (cfg.gru_history_len, cfg.input_planes, 8, 8),
-                        dtype=np.float32,
-                    ),
+                    board_tensor   = board_np,
+                    history_tensor = hist_np,
                     policy_target  = policy,
                     wdl_label      = 1.0,  # Solver wins by definition.
                     phase          = int(board_obj.get_phase()),

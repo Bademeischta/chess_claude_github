@@ -83,7 +83,32 @@ class GRUHistoryEncoder(nn.Module):
         with torch.autocast(device_type=device_type, enabled=False):
             x = history.reshape(B, T, C * H * W).float()
 
-            self.gru.flatten_parameters()
+            # `flatten_parameters()` MUST NOT run inside a CUDA-graph
+            # capture: there it allocates the cuDNN flat weight buffer from
+            # the graph's PRIVATE memory pool and re-points every gru.*
+            # Parameter at a view into that pool. Consequences, all
+            # measured on step-116185 (2026-08-04):
+            #   * the parameters read as exact zeros outside a replay, so
+            #     every eager forward on that model (web GUI, oversize-batch
+            #     fallback, a state_dict() save before the first replay) sees
+            #     a DEAD encoder;
+            #   * each replay re-runs the captured copy from the pre-capture
+            #     storage, so optimiser updates written after capture are
+            #     reverted — the encoder froze at its capture-time weights;
+            #   * `load_state_dict` on such a model writes into graph-private
+            #     memory → cudaErrorIllegalAddress (the web-GUI second-model
+            #     crash).
+            # Outside a capture it must still run. `build_model` compacts
+            # the weights once, but that layout does not survive forever —
+            # the 2026-08-11 self-play run started warning "RNN module
+            # weights are not part of single contiguous chunk of memory"
+            # right after the first arena/SF-Elo gate, and from then on
+            # cuDNN recompacted on EVERY forward. The call is a cheap no-op
+            # when the weights are already flat, so guarding it on the
+            # capture state gives us both: no graph-pool capture, no
+            # silent per-call recompaction.
+            if not (x.is_cuda and torch.cuda.is_current_stream_capturing()):
+                self.gru.flatten_parameters()
             _, hidden = self.gru(x)
             # hidden: (num_layers, B, hidden_size) — take the last layer
             h_last = hidden[-1]  # (B, hidden_size)

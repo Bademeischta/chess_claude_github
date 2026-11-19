@@ -582,7 +582,13 @@ def phase_pretraining(
               f"({steps_per_epoch} steps)")
         for step in range(steps_per_epoch):
             metrics = trainer.train_step()
-            if metrics and step % 500 == 0:
+            # NOTE: the modulo MUST be on the global step, not on `step`.
+            # `step` counts within one epoch and an epoch here is
+            # `n // batch_size` — ~162 steps for a 166k-record distill part.
+            # `step % 500` therefore fired exactly once per epoch, so the
+            # 2026-08-06 distillation of 1M positions left 18 points in
+            # TensorBoard and no diagnosable curve at all.
+            if metrics and trainer.global_step % 25 == 0:
                 logger.log(metrics, trainer.global_step)
 
     # Force-save what we learned. checkpoint_every=200 means short pretrain
@@ -606,37 +612,33 @@ def _merge_buffer_file(replay_buffer, path: str) -> int:
     """Load a saved PrioritizedReplayBuffer pickle and APPEND its records
     into the live replay_buffer (rather than replacing it).
 
-    Returns the number of records actually appended. The pickle format
-    matches what PrioritizedReplayBuffer.save() writes: a dict with keys
-    "data", "priorities", "ptr", "size", etc. We only care about "data"
-    here — priorities get auto-assigned by the live buffer's add().
+    Returns the number of records actually appended. Reads both record
+    formats via `iter_record_chunks`: the chunked stream the harvest tools
+    write (loaded chunk by chunk, so a 10 GB part never lands in RAM whole)
+    and the legacy single-pickle buffer state dict. Priorities get
+    auto-assigned by the live buffer's add().
     """
-    import pickle
+    from training.replay_buffer import count_records, iter_record_chunks
     if not os.path.isfile(path):
         print(f"[merge] WARNING: buffer file not found: {path}",
               file=sys.stderr)
         return 0
     print(f"[merge] Loading {path} ...")
-    with open(path, "rb") as f:
-        state = pickle.load(f)
-    data = state.get("data", [])
-    size = int(state.get("size", 0))
+    total = count_records(path)
     appended = 0
-    for i in range(min(size, len(data))):
-        rec = data[i]
-        if rec is None:
-            continue
-        try:
-            replay_buffer.add(rec)
-            appended += 1
-        except Exception as e:
-            # A single bad record shouldn't kill the whole merge.
-            if appended == 0:
-                # Surface the first failure type — silently dropping
-                # everything would be very confusing.
-                print(f"[merge] WARNING: skipping bad record "
-                      f"({type(e).__name__}: {e})", file=sys.stderr)
-    print(f"[merge] Appended {appended:,} of {size:,} records "
+    for chunk in iter_record_chunks(path):
+        for rec in chunk:
+            try:
+                replay_buffer.add(rec)
+                appended += 1
+            except Exception as e:
+                # A single bad record shouldn't kill the whole merge.
+                if appended == 0:
+                    # Surface the first failure type — silently dropping
+                    # everything would be very confusing.
+                    print(f"[merge] WARNING: skipping bad record "
+                          f"({type(e).__name__}: {e})", file=sys.stderr)
+    print(f"[merge] Appended {appended:,} of {total:,} records "
           f"into the live replay buffer (now {len(replay_buffer):,} total).")
     return appended
 
@@ -674,7 +676,13 @@ def phase_sf_distill(
               f"({steps_per_epoch} steps)")
         for step in range(steps_per_epoch):
             metrics = trainer.train_step()
-            if metrics and step % 500 == 0:
+            # NOTE: the modulo MUST be on the global step, not on `step`.
+            # `step` counts within one epoch and an epoch here is
+            # `n // batch_size` — ~162 steps for a 166k-record distill part.
+            # `step % 500` therefore fired exactly once per epoch, so the
+            # 2026-08-06 distillation of 1M positions left 18 points in
+            # TensorBoard and no diagnosable curve at all.
+            if metrics and trainer.global_step % 25 == 0:
                 logger.log(metrics, trainer.global_step)
             # Objective SF-anchor curve DURING distillation too — this is
             # the phase where most strength is expected to arrive, so it
@@ -726,7 +734,13 @@ def phase_puzzles(
               f"({steps_per_epoch} steps)")
         for step in range(steps_per_epoch):
             metrics = trainer.train_step()
-            if metrics and step % 500 == 0:
+            # NOTE: the modulo MUST be on the global step, not on `step`.
+            # `step` counts within one epoch and an epoch here is
+            # `n // batch_size` — ~162 steps for a 166k-record distill part.
+            # `step % 500` therefore fired exactly once per epoch, so the
+            # 2026-08-06 distillation of 1M positions left 18 points in
+            # TensorBoard and no diagnosable curve at all.
+            if metrics and trainer.global_step % 25 == 0:
                 logger.log(metrics, trainer.global_step)
             if _interval_crossed(gates, "sf_elo", trainer.global_step,
                                  CONFIG.sf_elo_every_n_steps):

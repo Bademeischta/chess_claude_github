@@ -45,27 +45,36 @@ for _s in (sys.stdout, sys.stderr):
 
 from config import CONFIG                          # noqa: E402
 import training.replay_buffer as _rb               # noqa: E402,F401  (registers PositionRecord)
-from training.replay_buffer import TeacherBuffer   # noqa: E402
+from training.replay_buffer import (                # noqa: E402
+    TeacherBuffer, iter_record_chunks)
 
 
-def _load_records(path: Path) -> list:
-    """Records from a replay/teacher pickle, gzip or plain. Streams from the
-    file handle (no full-file bytes copy) to keep peak RAM down."""
+def _sample_records(path: Path, budget: int) -> tuple[list, int]:
+    """Up to `budget` records drawn uniformly at random, plus the total seen.
+
+    Reservoir sampling (Algorithm R) over `iter_record_chunks`, which handles
+    both the chunked stream format and the legacy single-pickle buffer, gzip
+    or plain. For a streamed source, peak RAM is one chunk plus the reservoir
+    — previously an ~8 GB part was loaded whole just to draw 25k records from
+    it. Legacy files still come back as one chunk (they cannot be read
+    incrementally), so the win applies to freshly harvested parts.
+    """
     if not path.exists():
         print(f"[seed] not found: {path}")
-        return []
-    with open(path, "rb") as f:
-        magic = f.read(2)
-        f.seek(0)
-        if magic == b"\x1f\x8b":
-            with gzip.open(f, "rb") as g:
-                state = pickle.load(g)
-        else:
-            state = pickle.load(f)
-    data = state.get("data", [])
-    size = int(state.get("size", len(data)))
-    end = size if 0 < size <= len(data) else len(data)
-    return [r for r in data[:end] if r is not None]
+        return [], 0
+    budget = max(0, int(budget))
+    reservoir: list = []
+    seen = 0
+    for chunk in iter_record_chunks(str(path)):
+        for rec in chunk:
+            seen += 1
+            if len(reservoir) < budget:
+                reservoir.append(rec)
+            else:
+                j = random.randrange(seen)
+                if j < budget:
+                    reservoir[j] = rec
+    return reservoir, seen
 
 
 def _free_avail_gb() -> float:
@@ -116,10 +125,8 @@ def main() -> int:
         budget = remaining if i == len(srcs) - 1 else min(per_src, remaining)
         if budget <= 0:
             break
-        recs = _load_records(_root / s)
-        print(f"[seed] {s}: {len(recs):,} records → sampling {min(budget, len(recs)):,}")
-        if len(recs) > budget:
-            recs = random.sample(recs, budget)
+        recs, seen = _sample_records(_root / s, budget)
+        print(f"[seed] {s}: {seen:,} records → sampling {len(recs):,}")
         pool.extend(recs)
         del recs
         gc.collect()
@@ -130,10 +137,11 @@ def main() -> int:
 
     # Optionally retain a slice of the existing (weak) teacher data.
     if args.keep_existing_frac > 0 and teacher_path.exists():
-        existing = _load_records(teacher_path)
-        keep_n = min(len(existing), int(cap * args.keep_existing_frac))
+        keep_n = int(cap * args.keep_existing_frac)
+        existing, _seen = _sample_records(teacher_path, keep_n)
+        keep_n = len(existing)
         if keep_n:
-            pool.extend(random.sample(existing, keep_n))
+            pool.extend(existing)
         del existing
         gc.collect()
         print(f"[seed] retained {keep_n:,} existing teacher records")

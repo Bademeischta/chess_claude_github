@@ -448,7 +448,7 @@ class ChessAIConfig:
 
     # Path to a Stockfish UCI binary, used by tools/elo_vs_stockfish.py to
     # measure an objective ELO. Leave empty and pass --stockfish on the CLI.
-    stockfish_path: str = "C:/Users/silas/OneDrive/Desktop/ChatKi/chess_ai/tools/stockfish/stockfish/stockfish-windows-x86-64-avx2.exe"
+    stockfish_path: str = "C:/Users/silas/Projekte/Schach-KI/chess_ai/tools/stockfish/stockfish/stockfish-windows-x86-64-avx2.exe"
 
     # ── Endgame pretraining ──────────────────────────────────────────────
     pretrain_positions: int = 500_000

@@ -71,7 +71,7 @@ import numpy as np
 from config import CONFIG
 from engine.board import Board
 from engine.movegen import move_to_action_index, _move_uci
-from training.replay_buffer import PositionRecord, PrioritizedReplayBuffer
+from training.replay_buffer import PositionRecord, RecordStreamWriter
 
 
 # Approximate ELO per Stockfish Skill Level (from the SF developer table).
@@ -99,13 +99,63 @@ def uci_to_move_int(board: Board, uci: str) -> Optional[int]:
     return None
 
 
+def adjudicate_final(
+    sf: chess.engine.SimpleEngine,
+    board: "chess.Board",
+    *,
+    skill: int,
+    depth: int,
+    win_cp: int,
+) -> float:
+    """White-POV result for a game stopped by the ply cap.
+
+    Analysed at FULL strength (Skill Level 20) regardless of the level the
+    game was played at — the label should say what the position objectively
+    is, not what a deliberately weakened engine happens to see. The skill
+    setting is restored afterwards so the next game plays as configured.
+
+    Returns 1.0 / 0.5 / 0.0. Anything short of `win_cp` stays a draw, and
+    any engine hiccup falls back to 0.5 — a wrong decisive label is worse
+    than the unverified draw we are trying to get rid of.
+    """
+    try:
+        sf.configure({"Skill Level": 20})
+        info = sf.analyse(board, chess.engine.Limit(depth=depth))
+        score = info["score"].white()
+    except Exception as e:  # noqa: BLE001 — never kill a game over a label
+        print(f"[sf-distill] WARNING: adjudication failed "
+              f"({type(e).__name__}: {e}) — labelling draw.", file=sys.stderr)
+        return 0.5
+    finally:
+        try:
+            sf.configure({"Skill Level": int(skill)})
+        except Exception:
+            pass
+
+    if score.is_mate():
+        mate = score.mate()
+        if mate is None:
+            return 0.5
+        return 1.0 if mate > 0 else 0.0
+    cp = score.score()
+    if cp is None:
+        return 0.5
+    if cp >= win_cp:
+        return 1.0
+    if cp <= -win_cp:
+        return 0.0
+    return 0.5
+
+
 def play_one_game(
     sf: chess.engine.SimpleEngine,
     skill: int,
     movetime_s: float,
     max_plies: int,
     opening_random_plies: int,
-) -> tuple[list[tuple[str, str, int]], float]:
+    adjudicate_depth: int = 12,
+    adjudicate_cp: int = 200,
+) -> tuple[list[tuple[str, Optional[str], int]], float]:
     """Play one SF-vs-SF game.
 
     Args:
@@ -118,7 +168,10 @@ def play_one_game(
     Returns:
         (history, wdl_white) where history is a list of
         (fen_before_move, played_move_uci, side_to_move_int) tuples and
-        wdl_white is the final game result from White's POV
+        wdl_white is the final game result from White's POV.
+        Random opening plies are included with played_move_uci=None: they
+        are not teacher signal, but they ARE the GRU history context of
+        the positions that follow (see build_position_records)
         (1.0 = win, 0.5 = draw, 0.0 = loss).
     """
     # Skill setup. UCI_LimitStrength must be False — otherwise SF silently
@@ -136,7 +189,14 @@ def play_one_game(
         if not legal:
             break
         mv = random.choice(legal)
-        # Don't record random opening moves as teacher signal — they're noise.
+        # Recorded with move=None: random opening moves are not teacher
+        # signal (they're noise), but the positions still have to enter the
+        # GRU history of the SF moves that follow them.
+        history.append((
+            board.fen(),
+            None,
+            0 if board.turn == chess.WHITE else 1,
+        ))
         board.push(mv)
 
     # SF-driven main game.
@@ -165,8 +225,16 @@ def play_one_game(
     # Resolve game outcome.
     outcome = board.outcome(claim_draw=True)
     if outcome is None:
-        # Hit max_plies without a real result — treat as draw.
-        wdl_white = 0.5
+        # Hit max_plies without a real result. Labelling these 0.5 is the
+        # P4-1 defect the audit fixed for self-play (cap hit ⇒ adjudicate
+        # from the final evaluation) but which never reached this harvester.
+        # Measured on the 2026-08-06 harvest: 14.4% of games hit the cap and
+        # 94% of those were stamped "draw" — and being the longest games,
+        # they contributed ~19% of ALL harvested positions. Stockfish is
+        # already in the process, so one full-strength eval settles it.
+        wdl_white = adjudicate_final(sf, board, skill=skill,
+                                     depth=adjudicate_depth,
+                                     win_cp=adjudicate_cp)
     elif outcome.winner is None:
         wdl_white = 0.5
     elif outcome.winner == chess.WHITE:
@@ -178,7 +246,7 @@ def play_one_game(
 
 
 def build_position_records(
-    history: list[tuple[str, str, int]],
+    history: list[tuple[str, Optional[str], int]],
     wdl_white: float,
     cfg,
 ) -> list[PositionRecord]:
@@ -189,13 +257,41 @@ def build_position_records(
     about "this move was good enough" than about exploring distributions.
     The value target is the game-final result from each side's POV, which
     is the same MC return AlphaZero uses (no per-move eval).
+
+    The GRU history is reconstructed from the game itself, in exactly the
+    self-play convention (mcts.tree.fill_history): the last
+    `gru_history_len` boards strictly BEFORE the current one, right-aligned
+    and zero-padded on the left, each canonicalised to its own mover.
+    Filling it with zeros instead — as this tool did until 2026-08-04 —
+    pairs every Stockfish move with a blank history channel, so ~30% of
+    each training batch (teacher_batch_ratio) taught the net a context it
+    never sees while playing.
     """
     records: list[PositionRecord] = []
+    T = int(cfg.gru_history_len)
+    # Rolling window of the preceding board tensors, most recent last.
+    past: list[np.ndarray] = []
     for fen, played_uci, side_to_move in history:
         try:
             board_obj = Board.from_fen(fen)
         except Exception:
-            # Some FENs trigger a C++ parity issue — just skip those.
+            # Some FENs trigger a C++ parity issue — just skip those. The
+            # history window keeps its gap: one missing board is closer to
+            # the truth than shifting older boards into its slot.
+            past.append(np.zeros((cfg.input_planes, 8, 8), dtype=np.float16))
+            del past[:-T]
+            continue
+
+        board_np = board_obj.to_tensor().astype(np.float16)
+        hist_np = np.zeros((T, cfg.input_planes, 8, 8), dtype=np.float16)
+        n = min(len(past), T)
+        if n:
+            hist_np[T - n:] = past[-n:]
+        past.append(board_np)
+        del past[:-T]
+
+        if played_uci is None:
+            # Random opening ply: context for what follows, not a target.
             continue
 
         move_int = uci_to_move_int(board_obj, played_uci)
@@ -215,11 +311,8 @@ def build_position_records(
 
         try:
             records.append(PositionRecord(
-                board_tensor   = board_obj.to_tensor(),
-                history_tensor = np.zeros(
-                    (cfg.gru_history_len, cfg.input_planes, 8, 8),
-                    dtype=np.float32,
-                ),
+                board_tensor   = board_np,
+                history_tensor = hist_np,
                 policy_target  = policy,
                 wdl_label      = float(wdl),
                 phase          = int(board_obj.get_phase()),
@@ -268,6 +361,19 @@ def main() -> int:
                     help="RNG seed for reproducibility (default: 42).")
     ap.add_argument("--print-every", type=int, default=10,
                     help="Print progress every N games (default: 10).")
+    ap.add_argument("--adjudicate-depth", type=int, default=12,
+                    help="Search depth for adjudicating games that hit "
+                         "--max-plies (default: 12).")
+    ap.add_argument("--adjudicate-cp", type=int, default=200,
+                    help="Centipawn margin above which an adjudicated game "
+                         "counts as decisive (default: 200). Below it the "
+                         "game stays a draw.")
+    ap.add_argument("--chunk-positions", type=int, default=10_000,
+                    help="Flush the output file every N positions (default: "
+                         "10000 ≈ 240 MB in flight). Records used to be held "
+                         "in RAM until the end of the run, which capped a "
+                         "6-worker harvest at ~1300 games/worker on a 32 GB "
+                         "box; streaming makes disk the only limit.")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -306,9 +412,11 @@ def main() -> int:
               f"{type(e).__name__}: {e}", file=sys.stderr)
         return 1
 
-    # Capacity estimate: avg game length 80 plies, but allow generous slack.
-    cap = max(args.games * 200, 50_000)
-    buf = PrioritizedReplayBuffer(capacity=cap)
+    # Records go straight to disk in chunks — see RecordStreamWriter for why.
+    out_path = _root / args.out
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    buf = RecordStreamWriter(str(out_path),
+                             chunk_positions=args.chunk_positions)
 
     print(f"[sf-distill] Stockfish ready.")
     print(f"[sf-distill] skill={skill_pool}  "
@@ -332,6 +440,8 @@ def main() -> int:
                 movetime_s=args.movetime,
                 max_plies=args.max_plies,
                 opening_random_plies=args.opening_random_plies,
+                adjudicate_depth=args.adjudicate_depth,
+                adjudicate_cp=args.adjudicate_cp,
             )
             if not history:
                 games_skipped += 1
@@ -367,10 +477,10 @@ def main() -> int:
         except Exception:
             pass
 
-    # Save to disk.
-    out_path = _root / args.out
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    buf.save(str(out_path))
+    # Flush the tail chunk and stamp the sidecar meta as complete. Reached on
+    # the normal path AND after Ctrl+C, so an interrupted harvest still leaves
+    # a fully usable part behind.
+    buf.close()
 
     dt = time.time() - t0
     print()

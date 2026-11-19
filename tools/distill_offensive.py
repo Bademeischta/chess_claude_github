@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import pickle
 import subprocess
 import sys
 import time
@@ -83,6 +82,11 @@ def main() -> int:
     ap.add_argument("--movetime", type=float, default=0.12)
     ap.add_argument("--sf-threads", type=int, default=2)
     ap.add_argument("--probe-games", type=int, default=40)
+    ap.add_argument("--sup-epochs", type=int, default=3,
+                    help="passes over EACH harvested part (default: 3, which "
+                         "is ~2900 gradient steps for a 1M-position harvest). "
+                         "The docstring promised this knob since the first "
+                         "version but it was never forwarded to main.py.")
     ap.add_argument("--skip-harvest", action="store_true",
                     help="reuse existing replay_buffer/sf_distill_p*.pkl")
     args = ap.parse_args()
@@ -125,20 +129,22 @@ def main() -> int:
     # copy filled the disk (Errno 28) and killed the pipeline. Parts are
     # consumed directly; unreadable ones (e.g. a worker's save died on
     # the full disk) are skipped with a warning.
+    # `count_records` reads the sidecar meta a streamed part leaves behind, so
+    # validating six multi-GB parts costs no RAM at all. Legacy parts (written
+    # before 2026-08-04) have no meta and get counted by a full read.
+    from training.replay_buffer import count_records
+
     valid_parts: list[Path] = []
     n_positions = 0
     for part in parts:
         try:
-            with open(part, "rb") as f:
-                st = pickle.load(f)
-            n = int(st.get("size", 0))
+            n = count_records(str(part))
             if n > 0:
                 valid_parts.append(part)
                 n_positions += n
                 _log(f"validated {part.name}: {n} positions")
             else:
-                _log(f"WARNING: {part.name} is empty — skipped")
-            del st
+                _log(f"WARNING: {part.name} is empty or missing — skipped")
         except Exception as e:  # noqa: BLE001 — truncated/missing pickle
             _log(f"WARNING: {part.name} unreadable "
                  f"({type(e).__name__}) — skipped")
@@ -164,6 +170,7 @@ def main() -> int:
         rc = subprocess.call(
             [PY, "-u", str(_root / "main.py"), "--phase=sf_distill",
              "--sf-buffer", str(part.relative_to(_root)),
+             "--sup-epochs", str(args.sup_epochs),
              "--resume", str(_root / "checkpoints" / "latest.pt")],
             cwd=_root)
         _log(f"sf_distill[{part.name}] rc={rc}")

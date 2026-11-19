@@ -391,6 +391,13 @@ def build_model(cfg, compile_model: bool = True) -> ChessNet:
     # recompacts on every forward). Its forward disables autocast internally.
     if net.gru_encoder is not None:
         net.gru_encoder.float()
+        # Compact the RNN weights into cuDNN's contiguous buffer ONCE, here —
+        # never inside forward(), where a CUDA-graph capture would move them
+        # into the graph's private pool (see GRUHistoryEncoder.forward).
+        # After this the gru.* Parameters are views into that buffer, so
+        # in-place updates (optimiser step, load_state_into) stay visible to
+        # both eager forwards and any captured graph.
+        net.gru_encoder.gru.flatten_parameters()
 
     # NOTE: a channels_last memory-format pass was tried and reverted —
     # on 8×8 spatial dims the NHWC kernels don't actually win, and the

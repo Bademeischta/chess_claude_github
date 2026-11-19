@@ -608,3 +608,877 @@
 
 === supervisor start 2026-06-11T13:48:11.319586 === args=['--phase=all']
 [2026-06-11T17:25:09.939121] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-12T15:23:17.386612 === args=['--phase=all']
+[2026-06-12T15:47:31.439697] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-12T17:56:34.519235 === args=['--phase=all']
+[2026-06-13T13:43:34.974775] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-13T13:46:51.919774 === args=['--phase=all']
+
+=== supervisor start 2026-06-13T14:33:48.988626 === args=['--phase=all']
+[2026-06-13T16:24:12.690959] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-13T17:17:23.385377 === args=['--phase=all']
+[2026-06-13T21:29:55.047776] CRASH exit=1073807364 restart=1 consecutive=1 uptime_h=4.21
+  tail:
+  |   done: 160 games | +7672 pos | 190.7s | 40 pos/s | ~48 moves/game
+  | [Phase 1] Batch 46 done — +7672 pos | replay=174,131 | train_steps=30 | 24 pos/s | 1832 games/hr | step=12596
+  | 
+  | [Phase 1] Batch 47 — generating 160 games (replay buffer: 174,131/5,000)
+  |   [152 standard(sims=128), 8 teacher(sims=128)] | replay=174,131 teacher=200,000
+  |   done: 160 games | +7415 pos | 220.3s | 34 pos/s | ~46 moves/game
+  | [Trainer] Buffer snapshot saved (replay=174,131, teacher=200,000)
+  | [04:11:34]  step= 12,600  loss=1.6011  (p=2.6080 v=0.3507)  ELO=--  H=2.51  lr=9.99e-04  pos/s=24  VRAM=431MB  buf=174,131
+  | [Phase 1] Batch 47 done — +7415 pos | replay=174,131 | train_steps=29 | 23 pos/s | 1796 games/hr | step=12625
+  | 
+  | [Phase 1] Batch 48 — generating 160 games (replay buffer: 174,131/5,000)
+  |   [152 standard(sims=128), 8 teacher(sims=128)] | replay=174,131 teacher=200,000
+
+=== supervisor start 2026-06-14T01:15:38.942526 === args=['--phase=all']
+
+=== supervisor start 2026-06-14T16:36:58.761488 === args=['--phase=all']
+[2026-06-14T17:30:42.969744] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-14T18:29:42.284727 === args=['--phase=all']
+
+=== supervisor start 2026-06-15T05:55:14.778891 === args=['--phase=all']
+
+=== supervisor start 2026-06-15T09:50:59.802851 === args=['--phase=all']
+[2026-06-15T19:19:17.191608] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-15T23:10:14.742213 === args=['--phase=all']
+[2026-06-16T14:18:51.237161] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-16T16:34:29.918407 === args=['--phase=all']
+
+=== supervisor start 2026-06-16T22:04:54.969844 === args=['--phase=all']
+[2026-06-17T13:44:56.963634] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-17T14:23:22.465454 === args=['--phase=all']
+[2026-06-17T14:26:17.920880] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-17T22:56:06.698085 === args=['--phase=all']
+[2026-06-18T07:48:01.155423] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-18T07:48:11.606979 === args=['--phase=all']
+[2026-06-18T08:07:03.512614] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-18T12:18:31.428200 === args=['--phase=all']
+[2026-06-18T17:09:12.400860] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-18T19:03:42.381231 === args=['--phase=all#']
+[2026-06-18T19:03:44.171769] CRASH exit=2 restart=1 consecutive=1 uptime_h=0.00
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:03:55.880649] CRASH exit=2 restart=2 consecutive=2 uptime_h=0.00
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:04:07.532010] CRASH exit=2 restart=3 consecutive=3 uptime_h=0.01
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:04:19.175988] CRASH exit=2 restart=4 consecutive=4 uptime_h=0.01
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:04:30.834855] CRASH exit=2 restart=5 consecutive=5 uptime_h=0.01
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:05:32.476758] CRASH exit=2 restart=6 consecutive=6 uptime_h=0.03
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:06:34.116772] CRASH exit=2 restart=7 consecutive=7 uptime_h=0.05
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:07:35.756509] CRASH exit=2 restart=8 consecutive=8 uptime_h=0.06
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:08:37.384203] CRASH exit=2 restart=9 consecutive=9 uptime_h=0.08
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:09:39.035899] CRASH exit=2 restart=10 consecutive=10 uptime_h=0.10
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:10:40.673417] CRASH exit=2 restart=11 consecutive=11 uptime_h=0.12
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:11:42.314845] CRASH exit=2 restart=12 consecutive=12 uptime_h=0.13
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:12:43.953486] CRASH exit=2 restart=13 consecutive=13 uptime_h=0.15
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:13:45.598723] CRASH exit=2 restart=14 consecutive=14 uptime_h=0.17
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:14:47.243989] CRASH exit=2 restart=15 consecutive=15 uptime_h=0.18
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:15:48.898668] CRASH exit=2 restart=16 consecutive=16 uptime_h=0.20
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:16:50.590208] CRASH exit=2 restart=17 consecutive=17 uptime_h=0.22
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:17:52.248946] CRASH exit=2 restart=18 consecutive=18 uptime_h=0.24
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:18:53.888562] CRASH exit=2 restart=19 consecutive=19 uptime_h=0.25
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:19:55.568370] CRASH exit=2 restart=20 consecutive=20 uptime_h=0.27
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:20:57.220650] CRASH exit=2 restart=21 consecutive=21 uptime_h=0.29
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:21:58.884081] CRASH exit=2 restart=22 consecutive=22 uptime_h=0.30
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:23:00.516984] CRASH exit=2 restart=23 consecutive=23 uptime_h=0.32
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:24:02.148315] CRASH exit=2 restart=24 consecutive=24 uptime_h=0.34
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:25:03.786749] CRASH exit=2 restart=25 consecutive=25 uptime_h=0.36
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:26:05.438322] CRASH exit=2 restart=26 consecutive=26 uptime_h=0.37
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:27:07.080453] CRASH exit=2 restart=27 consecutive=27 uptime_h=0.39
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:28:08.727548] CRASH exit=2 restart=28 consecutive=28 uptime_h=0.41
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:29:10.386475] CRASH exit=2 restart=29 consecutive=29 uptime_h=0.42
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:30:12.044284] CRASH exit=2 restart=30 consecutive=30 uptime_h=0.44
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:31:13.675349] CRASH exit=2 restart=31 consecutive=31 uptime_h=0.46
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:32:15.338332] CRASH exit=2 restart=32 consecutive=32 uptime_h=0.48
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:33:17.012524] CRASH exit=2 restart=33 consecutive=33 uptime_h=0.49
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:34:18.648833] CRASH exit=2 restart=34 consecutive=34 uptime_h=0.51
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:35:20.319071] CRASH exit=2 restart=35 consecutive=35 uptime_h=0.53
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:36:21.981171] CRASH exit=2 restart=36 consecutive=36 uptime_h=0.54
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:37:23.618712] CRASH exit=2 restart=37 consecutive=37 uptime_h=0.56
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:38:25.259156] CRASH exit=2 restart=38 consecutive=38 uptime_h=0.58
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:39:26.894266] CRASH exit=2 restart=39 consecutive=39 uptime_h=0.60
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:40:28.539945] CRASH exit=2 restart=40 consecutive=40 uptime_h=0.61
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:41:30.214387] CRASH exit=2 restart=41 consecutive=41 uptime_h=0.63
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:42:31.876903] CRASH exit=2 restart=42 consecutive=42 uptime_h=0.65
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:43:33.517775] CRASH exit=2 restart=43 consecutive=43 uptime_h=0.66
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:44:35.141853] CRASH exit=2 restart=44 consecutive=44 uptime_h=0.68
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:45:36.810413] CRASH exit=2 restart=45 consecutive=45 uptime_h=0.70
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:46:38.451049] CRASH exit=2 restart=46 consecutive=46 uptime_h=0.72
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:47:40.083542] CRASH exit=2 restart=47 consecutive=47 uptime_h=0.73
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:48:41.727169] CRASH exit=2 restart=48 consecutive=48 uptime_h=0.75
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:49:43.370502] CRASH exit=2 restart=49 consecutive=49 uptime_h=0.77
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+[2026-06-18T19:50:45.004941] CRASH exit=2 restart=50 consecutive=50 uptime_h=0.78
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+
+=== supervisor start 2026-06-18T22:04:56.257952 === args=['--phase=all#']
+[2026-06-18T22:05:01.705585] CRASH exit=2 restart=1 consecutive=1 uptime_h=0.00
+  tail:
+  | usage: main.py [-h]
+  |                [--phase {pretraining,sf_distill,puzzles,selfplay,distillation,refinement,all}]
+  |                [--sf-buffer SF_BUFFER] [--puzzle-buffer PUZZLE_BUFFER]
+  |                [--sup-epochs SUP_EPOCHS] [--resume RESUME] [--test]
+  |                [--syzygy SYZYGY] [--play] [--side {white,black}] [--sims SIMS]
+  |                [--show] [--ponder] [--grow N] [--no-stockfish-download]
+  | main.py: error: argument --phase: invalid choice: 'all#' (choose from 'pretraining', 'sf_distill', 'puzzles', 'selfplay', 'distillation', 'refinement', 'all')
+
+=== supervisor start 2026-06-18T22:05:11.340237 === args=['--phase=all']
+[2026-06-19T11:33:56.394417] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-19T15:43:33.128232 === args=['--phase=all']
+[2026-06-19T16:01:21.474395] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-19T16:18:37.250603 === args=['--phase=all']
+
+=== supervisor start 2026-06-19T16:50:43.079736 === args=['--phase=all']
+
+=== supervisor start 2026-06-19T20:06:27.566707 === args=['--phase=all']
+[2026-06-20T05:52:31.544906] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=9.77
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Thread 0x00000c4c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 197 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 217 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+
+=== supervisor start 2026-06-20T14:28:21.958087 === args=['--phase=all']
+
+=== supervisor start 2026-06-20T15:33:30.461928 === args=['--phase=all']
+[2026-06-20T15:42:41.356849] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=0.15
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Thread 0x00004e78 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 197 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 217 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-20T15:51:43.963574] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=0.30
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Thread 0x000050f8 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 197 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 217 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-20T16:35:21.168189] user interrupt after 2 restart(s)
+
+=== supervisor start 2026-06-20T21:57:40.294813 === args=['--phase=all']
+
+=== supervisor start 2026-06-21T05:40:41.296750 === args=['--phase=all']
+[2026-06-21T10:09:53.818546] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=4.49
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Thread 0x00008d08 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 197 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 217 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-21T10:14:45.056621] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=4.57
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Thread 0x00006c54 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 197 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 217 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-21T11:43:31.130228] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=6.05
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Thread 0x00008fa8 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 197 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 217 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-21T15:14:39.676786] user interrupt after 3 restart(s)
+
+=== supervisor start 2026-06-21T15:57:29.065731 === args=['--phase=all']
+[2026-06-21T17:03:07.492230] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-21T17:12:12.557827 === args=['--phase=all']
+[2026-06-21T17:42:49.612695] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-21T18:30:08.470570 === args=['--phase=all']
+[2026-06-21T23:15:45.504525] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-22T01:15:27.638681 === args=['--phase=all']
+[2026-06-22T10:48:52.189364] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-22T14:50:27.336282 === args=['--phase=all']
+[2026-06-22T17:09:22.304645] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=2.32
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x0000a06c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 204 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 224 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-22T17:55:48.460043] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=3.09
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x000020e8 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 204 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 224 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-23T00:16:05.826077] CRASH exit=3221225477 restart=3 consecutive=3 uptime_h=9.43
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x0000a7b4 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 204 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 224 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-23T14:23:27.789801] CRASH exit=3221225477 restart=4 consecutive=4 uptime_h=23.55
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x0000a72c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 204 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 224 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-24T10:15:21.485517] user interrupt after 4 restart(s)
+
+=== supervisor start 2026-06-24T14:59:31.251022 === args=['--phase=all']
+[2026-06-24T16:59:32.788435] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=2.00
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x0000953c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 204 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 224 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+
+=== supervisor start 2026-06-24T23:39:48.152708 === args=['--phase=all']
+[2026-06-25T08:00:32.084113] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-25T08:17:54.124917 === args=['--phase=all']
+[2026-06-25T11:11:11.602232] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-27T15:26:38.403165 === args=['--phase=all']
+[2026-06-27T15:59:18.568969] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=0.54
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x000078e0 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 204 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 224 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+[2026-06-27T18:41:37.603852] user interrupt after 1 restart(s)
+
+=== supervisor start 2026-06-27T20:06:17.606029 === args=['--phase=all']
+
+=== supervisor start 2026-06-28T00:37:17.417517 === args=['--phase=all']
+[2026-06-28T01:04:19.994579] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=0.45
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x00004118 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 204 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 224 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 717 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1252 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1268 in <module>
+
+=== supervisor start 2026-06-28T14:20:32.476632 === args=['--phase=all']
+[2026-06-29T09:46:43.539046] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-06-29T11:41:54.847812 === args=['--phase=all']
+
+=== supervisor start 2026-06-29T12:56:32.158650 === args=['--phase=all']
+
+=== supervisor start 2026-07-01T21:45:57.742675 === args=['--phase=all']
+
+=== supervisor start 2026-07-02T22:23:12.678367 === args=['--phase=all']
+
+=== supervisor start 2026-07-03T16:15:50.200786 === args=['--phase=all']
+[2026-07-03T16:16:00.921977] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-07-03T16:31:07.190547 === args=['--phase=all']
+[2026-07-03T16:51:05.153466] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-07-07T14:21:31.491108 === args=['--phase=all']
+
+=== supervisor start 2026-07-07T17:54:16.275055 === args=['--phase=all']
+[2026-07-07T19:19:42.857700] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=1.42
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x000021e4 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 209 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 229 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 711 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1246 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1262 in <module>
+[2026-07-07T20:10:30.186950] user interrupt after 1 restart(s)
+
+=== supervisor start 2026-07-08T08:51:53.403363 === args=['--phase=all']
+[2026-07-08T12:23:50.677918] CRASH exit=3 restart=1 consecutive=1 uptime_h=3.53
+  tail:
+  | 00007FFFD74BB21900007FFFD74BB180 python311.dll!Py_FinalizeEx [<unknown file> @ <unknown line number>]
+  | 00007FFFD74B582E00007FFFD74B5814 python311.dll!Py_RunMain [<unknown file> @ <unknown line number>]
+  | 00007FFFD74B601900007FFFD74B5FF4 python311.dll!Py_Main [<unknown file> @ <unknown line number>]
+  | 00007FF7F7B61230 <unknown symbol address> python.exe!<unknown symbol> [<unknown file> @ <unknown line number>]
+  | 00007FF8C603E95700007FF8C603E940 KERNEL32.DLL!BaseThreadInitThunk [<unknown file> @ <unknown line number>]
+  | 00007FF8C8327C1C00007FF8C8327BF0 ntdll.dll!RtlUserThreadStart [<unknown file> @ <unknown line number>]
+  | 
+  | Fatal Python error: Aborted
+  | 
+  | Current thread 0x000010d8 (most recent call first):
+  |   Garbage-collecting
+  |   <no Python frame>
+[2026-07-08T12:36:03.140205] CRASH exit=3221225477 restart=2 consecutive=2 uptime_h=3.74
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Current thread 0x000036f8 (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1153 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1080 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1422 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 209 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 229 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 711 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1246 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1262 in <module>
+
+=== supervisor start 2026-07-16T10:31:36.270747 === args=['--phase=all']
+[2026-07-16T12:13:06.171109] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-07-16T22:32:42.149634 === args=['--phase=all']
+
+=== supervisor start 2026-07-17T14:17:02.710246 === args=['--phase=all']
+[2026-07-19T13:17:59.518461] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-07-20T10:12:59.471737 === args=['--phase=all']
+[2026-07-20T13:08:07.312667] CRASH exit=1073807364 restart=1 consecutive=1 uptime_h=2.92
+  tail:
+  |   [160 standard(sims=128)] | replay=194,603 teacher=150,000
+  |   done: 160 games | +10777 pos | 504.9s | 21 pos/s | ~67 moves/game
+  | [Phase 1] Batch 24 done — +10777 pos | replay=194,603 | train_steps=42 | 24 pos/s | 1493 games/hr | step=112381
+  | 
+  | [Phase 1] Batch 25 — generating 160 games (replay buffer: 194,603/5,000)
+  |   [160 standard(sims=128)] | replay=194,603 teacher=150,000
+  |   done: 160 games | +11169 pos | 382.9s | 29 pos/s | ~70 moves/game
+  | [02:41:32]  step=112,400  loss=2.2762  (p=2.6763 v=0.5461)  ELO=--  H=2.53  lr=5.00e-04  pos/s=24  VRAM=414MB  buf=194,603
+  | [Phase 1] Batch 25 done — +11169 pos | replay=194,603 | train_steps=44 | 24 pos/s | 1486 games/hr | step=112425
+  | 
+  | [Phase 1] Batch 26 — generating 160 games (replay buffer: 194,603/5,000)
+  |   [160 standard(sims=128)] | replay=194,603 teacher=150,000
+
+=== supervisor start 2026-07-21T16:41:08.786077 === args=['--phase=all']
+[2026-07-21T19:26:55.704350] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-07-21T20:32:14.401848 === args=['--phase=all']
+[2026-07-22T09:42:02.717265] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-08-11T13:17:02.606779 === args=['--phase=all']
+[2026-08-11T18:19:48.764137] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-08-12T03:41:42.456521 === args=['--phase=all']
+[2026-08-12T08:34:55.671801] user interrupt after 0 restart(s)
+
+=== supervisor start 2026-08-12T08:39:21.216374 === args=['--phase=all']
+[2026-08-12T08:52:48.414275] CRASH exit=3221225477 restart=1 consecutive=1 uptime_h=0.22
+  tail:
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1045 in _bootstrap_inner
+  |   File "C:\Users\silas\AppData\Local\Programs\Python\Python311\Lib\threading.py", line 1002 in _bootstrap
+  | 
+  | Thread 0x0000838c (most recent call first):
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1158 in _batched_sims_cpp
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1085 in _batched_sims
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\mcts\tree.py", line 1427 in game_stream
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 133 in _next_record
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\training\self_play.py", line 153 in generate_batch
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 803 in phase_selfplay
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1355 in main
+  |   File "C:\Users\silas\OneDrive\Desktop\ChatKi\chess_ai\main.py", line 1371 in <module>

@@ -469,3 +469,141 @@ class TeacherBuffer:
 # used to live here. It had zero call sites -- the trainer samples the
 # PER buffer directly (the measured-right design at ~25 MB H2D/step) --
 # and was removed together with the dataloader_* config knobs.
+
+
+# ── Streamed record files (2026-08-04) ──────────────────────────────────────
+#
+# The harvest tools used to accumulate every record in a buffer and pickle it
+# once at the end. Measured on the 2026-08-06 run: 6 workers × 2500 games ≈
+# 2.1 M positions × 24 kB = ~38 GB of resident RAM on a 31.7 GB machine — the
+# workers page, and the six simultaneous multi-GB pickle writes at the end are
+# where the 2026-07-19 harvest lost 4 of its 6 parts.
+#
+# The stream format writes chunks as they are produced, so producer RAM is
+# bounded by one chunk and the harvest is limited by disk instead:
+#
+#     pickle(header dict)  pickle(list[PositionRecord])  pickle(list[...])  ...
+#
+# Every chunk is a self-contained pickle, so a file from a killed worker stays
+# readable up to its last complete chunk. A sidecar `<path>.meta.json` carries
+# the record count so consumers can size themselves without reading the data.
+
+RECORD_STREAM_MAGIC = "chess_ai_records_v1"
+
+
+class RecordStreamWriter:
+    """Append-only chunked record file. Use as a context manager.
+
+    `chunk_positions` trades write syscalls against peak RAM: 10k records is
+    ~240 MB in flight per worker (~1.5 GB across a 6-worker harvest).
+    """
+
+    def __init__(self, path: str, chunk_positions: int = 10_000) -> None:
+        self.path = str(path)
+        self.chunk_positions = max(1, int(chunk_positions))
+        self._buf: List[PositionRecord] = []
+        self.n_written = 0
+        self.n_chunks = 0
+        self._f = open(self.path, "wb")
+        pickle.dump({"format": RECORD_STREAM_MAGIC}, self._f, protocol=4)
+        self._write_meta(complete=False)
+
+    def __enter__(self) -> "RecordStreamWriter":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def add(self, record: PositionRecord) -> None:
+        self._buf.append(record)
+        if len(self._buf) >= self.chunk_positions:
+            self.flush()
+
+    def add_batch(self, records) -> None:
+        for rec in records:
+            self.add(rec)
+
+    def flush(self) -> None:
+        if not self._buf:
+            return
+        pickle.dump(self._buf, self._f, protocol=4)
+        self._f.flush()
+        self.n_written += len(self._buf)
+        self.n_chunks += 1
+        self._buf = []
+        # Refreshed on every chunk so an interrupted worker still leaves an
+        # accurate count behind.
+        self._write_meta(complete=False)
+
+    def close(self) -> None:
+        if self._f is None:
+            return
+        self.flush()
+        self._f.close()
+        self._f = None
+        self._write_meta(complete=True)
+
+    def _write_meta(self, *, complete: bool) -> None:
+        import json
+        meta = {"format": RECORD_STREAM_MAGIC, "positions": self.n_written,
+                "chunks": self.n_chunks, "complete": bool(complete)}
+        try:
+            with open(self.path + ".meta.json", "w", encoding="utf-8") as f:
+                json.dump(meta, f)
+        except OSError:
+            pass  # A missing sidecar only costs consumers a scan.
+
+
+def _open_maybe_gzip(path: str):
+    """Open `path`, transparently unwrapping gzip. Returns a file object."""
+    f = open(path, "rb")
+    magic = f.read(2)
+    f.seek(0)
+    if magic == b"\x1f\x8b":
+        import gzip
+        return gzip.open(f, "rb")
+    return f
+
+
+def iter_record_chunks(path: str):
+    """Yield lists of PositionRecords from a record file.
+
+    Understands both the chunked stream format and the legacy single-pickle
+    buffer state dict ({"data": [...], "size": n}), plain or gzipped. Legacy
+    files can only be read whole — one chunk comes back. A stream truncated
+    by a killed writer yields every complete chunk and stops silently.
+    """
+    if not os.path.exists(path):
+        return
+    with _open_maybe_gzip(path) as f:
+        try:
+            head = pickle.load(f)
+        except Exception:
+            return
+        if isinstance(head, dict) and head.get("format") == RECORD_STREAM_MAGIC:
+            while True:
+                try:
+                    chunk = pickle.load(f)
+                except (EOFError, pickle.UnpicklingError, ValueError):
+                    return  # clean EOF, or a half-written trailing chunk
+                if chunk:
+                    yield [r for r in chunk if r is not None]
+        elif isinstance(head, dict) and "data" in head:
+            data = head.get("data", [])
+            size = int(head.get("size", len(data)))
+            end = size if 0 < size <= len(data) else len(data)
+            yield [r for r in data[:end] if r is not None]
+
+
+def count_records(path: str) -> int:
+    """Record count — from the sidecar meta when present (no data read),
+    otherwise by streaming the file. Returns 0 for missing/unreadable files."""
+    import json
+    meta_path = str(path) + ".meta.json"
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                return int(json.load(f).get("positions", 0))
+        except (OSError, ValueError):
+            pass
+    return sum(len(chunk) for chunk in iter_record_chunks(path))
